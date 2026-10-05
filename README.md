@@ -1,6 +1,6 @@
 # LLM Evaluation & Reliability Engineering: companion code
 
-Runnable code for the book *LLM Evaluation & Reliability Engineering* by Omar Kamal.
+Runnable code for the book *LLM Evaluation & Reliability Engineering* by Omar Kamal Hosney.
 
 Everything runs **offline**: no API key, no network, no cost. `common/relay_fake.py` is a scripted stand-in for the
 Relay assistant used throughout the book. It exposes one function, `ask(question, version)`, and that is the single
