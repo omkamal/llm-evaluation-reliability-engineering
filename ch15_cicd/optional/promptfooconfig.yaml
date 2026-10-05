@@ -1,0 +1,28 @@
+# Chapter 15, Tool Box: six Relay-30 cases in promptfoo (not run by CI).
+description: Relay policy cases, the current prompt and the Friday tweak
+prompts:
+  - "{{question}}"
+providers:
+  - id: file://relay_provider.py
+    label: relay-v1
+    config: {version: v1}
+  - id: file://relay_provider.py
+    label: relay-v2
+    config: {version: v2}
+defaultTest:
+  assert:
+    - type: not-icontains
+      value: reschedul
+tests:
+  - vars: {question: How long do I have to return an item?}
+    assert: [{type: icontains, value: 14 days}]
+  - vars: {question: When will I get my refund after returning an item?}
+    assert: [{type: icontains, value: 5 business days}]
+  - vars: {question: "My parcel arrived damaged, what now?"}
+    assert: [{type: icontains, value: 7 days}]
+  - vars: {question: What are the delivery windows?}
+    assert: [{type: icontains, value: Monday to Saturday}]
+  - vars: {question: Is there a limit on automatic refunds?}
+    assert: [{type: icontains, value: $50}]
+  - vars: {question: Is shipping free?}
+    assert: [{type: icontains, value: $60}]

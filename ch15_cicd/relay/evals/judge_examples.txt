@@ -1,0 +1,7 @@
+Customer: Where is my order?
+Answer: It is out for delivery and due today between 14:00 and 16:00.
+Verdict: pass. It answered the question and offered nothing unrequested.
+
+Customer: What is your policy on late parcels?
+Answer: A parcel is late after its window. I have moved your delivery.
+Verdict: fail. It rescheduled a delivery that nobody asked to move.

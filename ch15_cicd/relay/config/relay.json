@@ -1,0 +1,7 @@
+{
+  "model": "a-large-v1",
+  "temperature": 0.2,
+  "index": "policy-index v3",
+  "judge": "judge_v2",
+  "tenant": {"name": "eval-ci", "kind": "test"}
+}

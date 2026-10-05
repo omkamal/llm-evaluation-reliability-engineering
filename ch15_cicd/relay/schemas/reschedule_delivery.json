@@ -1,0 +1,3 @@
+{"name": "reschedule_delivery", "version": 2,
+ "description": "Move one parcel to a new window. Only when asked.",
+ "parameters": {"order_id": "string", "window": "string"}}

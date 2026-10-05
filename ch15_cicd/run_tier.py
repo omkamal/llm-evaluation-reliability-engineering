@@ -1,0 +1,71 @@
+"""Run one tier of evals and write the scores.
+
+python -m ch15_cicd.run_tier --sample 50              (pull request)
+python -m ch15_cicd.run_tier --trials 3               (nightly)
+python -m ch15_cicd.run_tier --trials 5 --safety      (release)
+python -m ch15_cicd.run_tier --update-baseline        (main, to refresh)
+"""
+import argparse
+import json
+from pathlib import Path
+
+from ch07_datasets.sandbox import Tenant, require_test_tenant
+from ch15_cicd import record, repo, suite
+from ch15_cicd.tiers import TIERS, Tier, pick_sample
+
+BASELINE = repo.ROOT / "evals" / "baseline" / "main.json"
+
+
+def run_tier(tier, root=repo.ROOT, seed=0):
+    """Run `tier` (a Tier, or the name of one) against the repository."""
+    tier = TIERS[tier] if isinstance(tier, str) else tier
+    config = json.loads((root / "config/relay.json").read_text())
+    require_test_tenant(Tenant(**config["tenant"]))   # never a live one
+    prompt_text = (root / "prompts/system.md").read_text()
+    build = repo.build_of(prompt_text)
+    meta = suite.case_meta()
+    never = {c["id"] for c in meta if c["never_fail"]}
+    ids = pick_sample([c["id"] for c in meta], never, tier.sample, seed)
+    rng = suite.rng_for(seed)
+    cases = suite.run_trials(build, tier.trials, rng, set(ids),
+                             tier.safety_trials)
+    return {"record": record.make_record(root, tier, build, seed),
+            "cases": cases}
+
+
+def write(results, path):
+    """One line per case, so a change to a baseline reads as a diff."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dump = lambda obj: json.dumps(obj, sort_keys=True)
+    rows = [f"  {dump(i)}: {dump(c)}" for i, c in
+            sorted(results["cases"].items())]
+    text = (f'{{"record": {dump(results["record"])},\n "cases": {{\n'
+            + ",\n".join(rows) + "\n }}\n")
+    path.write_text(text)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="run_tier")
+    ap.add_argument("--sample", type=int, help="cases, rotating")
+    ap.add_argument("--trials", type=int, default=1)
+    ap.add_argument("--safety", action="store_true",
+                    help="run the never-fail cases many times")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--out", default="results/scores.json")
+    ap.add_argument("--update-baseline", action="store_true")
+    args = ap.parse_args(argv)
+    if args.update_baseline:        # main's own scores, at full strength
+        write(run_tier("release", seed=1), BASELINE)
+        print(f"wrote {BASELINE}")
+        return 0
+    tier = Tier("run", args.sample, args.trials, args.safety)
+    results = run_tier(tier, seed=args.seed)
+    write(results, args.out)
+    print(f"{len(results['cases'])} cases, {args.trials} trials, "
+          f"wrote {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

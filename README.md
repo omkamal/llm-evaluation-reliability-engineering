@@ -21,9 +21,16 @@ line you would replace with a call to your own model.
 | `ch11_traces/` | A small tracer (spans, context, `traceparent` handoffs, links), six span types, a traced context trim, tail sampling, redaction, a trace-cost estimate and trace shrinking; `optional/` holds an OpenTelemetry snippet that CI does not run |
 | `ch12_slos/` | Per-task SLIs, a judged-sample SLI with its interval, one SLO sheet with two layers, error budget and burn-rate alerts over two windows, deep dependency checks and a one-page report; `optional/` holds Prometheus rules that CI does not run |
 | `ch13_drift/` | Segment-aware baseline bands, drift-probe sets (with the judge's own), PSI, chi-square and Kolmogorov-Smirnov tests, RAG drift, and alert routing with precision; `optional/` holds an Evidently snippet that CI does not run |
+| `ch14_cost/` | Token economics and the quadratic cost of history, cost per resolved task, FinOps showback and forecasting, cascades and routers, prompt and semantic caches, parallel latency, capacity and provisioning, and a paired proof that a saving keeps quality; `optional/` holds a LiteLLM snippet that CI does not run |
+| `ch15_cicd/` | A miniature prompts-as-code repository, path filters and eval tiers, the non-inferiority gate with a never-fail floor and slice limits, the gate's own A/A check, flaky-case quarantine, an eval cache, run records and bisect, the contamination guard, and the GitHub Actions workflow `workflows/evals.yml`; `optional/` holds DeepEval, promptfoo, Inspect and Ragas snippets that CI does not run |
+| `ch16_release/` | Shadow comparison, a canary controller with guard metrics and automatic rollback, a `FaultyProvider` rehearsal, the error-budget release check, release bundles with fingerprints, a migration runbook, a model scorecard, and the model-upgrade capstone |
+| `ch17_security/` | A guard chain (belt, tier, schema, session, owner, limit) with ownership taken from the session, a toy injection screen, a red-team set with benign twins and intervals, memory-poisoning rules, secret and tool-pin checks; `optional/` holds a Guardrails AI snippet that CI does not run |
+| `ch18_governance/` | A scoped, short-lived credential broker, a hash-chained audit trail with coverage, an inventory and change control, a compliance map as data, expected-loss review routing, context packets, and a rubber-stamp detector; `optional/` holds a LangGraph snippet that CI does not run |
+| `ch19_incidents/` | Kill-switch and version-pin flags, a runbook that climbs the containment ladder, a ledger with compensating actions, recovery checks against baseline bands, a status-update lint and a postmortem record check; `optional/` holds an OpenFeature snippet that CI does not run |
+| `ch20_program/` | A RACI sheet checked against a roster, a pager-load report, a runbook freshness audit, a three-verdict readiness scorecard, a maturity placement, a findings tracker and a quarterly report that refuses an unlabelled number |
 | `common/` | The scripted Relay stand-in and a fake clock, so a 30-second cooldown takes zero seconds in tests |
 
-More chapters will be added as the book is written.
+Chapters 1 to 20 each have a folder here, and the folder name starts with the chapter number (the prologue has no code).
 
 ## Run it
 
@@ -45,6 +52,13 @@ python3 -m venv .venv
 .venv/bin/python -m ch11_traces.demo            # Chapter 11: span trees, handoffs, sampling, cost
 .venv/bin/python -m ch12_slos.demo              # Chapter 12: SLO sheet, error budget, burn-rate alerts
 .venv/bin/python -m ch13_drift.demo             # Chapter 13: bands, drift tests, probe sets, alert routing
+.venv/bin/python -m ch14_cost.demo              # Chapter 14
+.venv/bin/python -m ch15_cicd.demo              # Chapter 15
+.venv/bin/python -m ch16_release.demo           # Chapter 16
+.venv/bin/python -m ch17_security.demo          # Chapter 17
+.venv/bin/python -m ch18_governance.demo        # Chapter 18
+.venv/bin/python -m ch19_incidents.demo         # Chapter 19
+.venv/bin/python -m ch20_program.demo           # Chapter 20
 ```
 
 Python 3.10 or newer. Chapter 2 uses [Pydantic](https://docs.pydantic.dev/) (`pip install -r requirements.txt`) and Chapter 5 reuses that gateway; everything else uses only the standard library. Files under `optional/` folders show a vendor library (OpenTelemetry, Prometheus, Evidently); they are not run by the tests or by CI, and each states the version it was checked with.
