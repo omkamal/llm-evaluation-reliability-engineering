@@ -1,0 +1,61 @@
+# Relay chat availability: 99.5% over 28 days, so the budget is 0.005.
+# Counter: relay_chats_total{outcome="ok"|"error"}.
+groups:
+- name: relay-slo-ratios
+  rules:
+  - record: relay:chat_errors:ratio_rate5m
+    expr: |
+      sum(rate(relay_chats_total{outcome="error"}[5m]))
+        / sum(rate(relay_chats_total[5m]))
+  - record: relay:chat_errors:ratio_rate30m
+    expr: |
+      sum(rate(relay_chats_total{outcome="error"}[30m]))
+        / sum(rate(relay_chats_total[30m]))
+  - record: relay:chat_errors:ratio_rate1h
+    expr: |
+      sum(rate(relay_chats_total{outcome="error"}[1h]))
+        / sum(rate(relay_chats_total[1h]))
+  - record: relay:chat_errors:ratio_rate6h
+    expr: |
+      sum(rate(relay_chats_total{outcome="error"}[6h]))
+        / sum(rate(relay_chats_total[6h]))
+  - record: relay:chat_errors:ratio_rate3d
+    expr: |
+      sum(rate(relay_chats_total{outcome="error"}[3d]))
+        / sum(rate(relay_chats_total[3d]))
+
+- name: relay-slo-burn
+  rules:
+  - alert: RelayBudgetBurnFast
+    expr: |
+      relay:chat_errors:ratio_rate1h > (14.4 * 0.005)
+      and
+      relay:chat_errors:ratio_rate5m > (14.4 * 0.005)
+    for: 2m
+    labels:
+      severity: page
+    annotations:
+      summary: "Relay is spending its error budget 14.4x too fast"
+      runbook: "https://runbooks.example/relay/budget-burn"
+  - alert: RelayBudgetBurnMedium
+    expr: |
+      relay:chat_errors:ratio_rate6h > (6 * 0.005)
+      and
+      relay:chat_errors:ratio_rate30m > (6 * 0.005)
+    for: 2m
+    labels:
+      severity: page
+    annotations:
+      summary: "Relay is spending its error budget 6x too fast"
+      runbook: "https://runbooks.example/relay/budget-burn"
+  - alert: RelayBudgetBurnSlow
+    expr: |
+      relay:chat_errors:ratio_rate3d > (1 * 0.005)
+      and
+      relay:chat_errors:ratio_rate6h > (1 * 0.005)
+    for: 15m
+    labels:
+      severity: ticket
+    annotations:
+      summary: "Relay is spending its error budget faster than 1x"
+      runbook: "https://runbooks.example/relay/budget-burn"

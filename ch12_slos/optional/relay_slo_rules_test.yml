@@ -1,0 +1,72 @@
+# promtool test rules relay_slo_rules_test.yml
+rule_files:
+  - relay_slo_rules.yml
+evaluation_interval: 1m
+
+tests:
+  # 8% of chats fail from the start, 100 chats a minute: burn 16x.
+  - interval: 1m
+    input_series:
+      - series: 'relay_chats_total{outcome="ok"}'
+        values: '0+92x120'
+      - series: 'relay_chats_total{outcome="error"}'
+        values: '0+8x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: RelayBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Relay is spending its error budget 14.4x too fast"
+              runbook: "https://runbooks.example/relay/budget-burn"
+
+  # 1% of chats fail: burn 2x. No page is due this early.
+  - interval: 1m
+    input_series:
+      - series: 'relay_chats_total{outcome="ok"}'
+        values: '0+99x120'
+      - series: 'relay_chats_total{outcome="error"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: RelayBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: RelayBudgetBurnMedium
+        exp_alerts: []
+
+  # A three-minute total outage after 60 healthy minutes. The 5 minute
+  # ratio is far above the line, but the 1 hour ratio is not: no page.
+  - interval: 1m
+    input_series:
+      - series: 'relay_chats_total{outcome="ok"}'
+        values: '0+100x60 6000x3 6100+100x20'
+      - series: 'relay_chats_total{outcome="error"}'
+        values: '0x60 100 200 300 300x20'
+    alert_rule_test:
+      - eval_time: 66m
+        alertname: RelayBudgetBurnFast
+        exp_alerts: []
+
+  # 20% of chats fail for 30 minutes, then the fault is fixed. The page
+  # is firing at minute 25 and silent again by minute 40, because the
+  # 5 minute window no longer agrees, though the 1 hour ratio is high.
+  - interval: 1m
+    input_series:
+      - series: 'relay_chats_total{outcome="ok"}'
+        values: '0+80x30 2400+100x30'
+      - series: 'relay_chats_total{outcome="error"}'
+        values: '0+20x30 600x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: RelayBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Relay is spending its error budget 14.4x too fast"
+              runbook: "https://runbooks.example/relay/budget-burn"
+      - eval_time: 40m
+        alertname: RelayBudgetBurnFast
+        exp_alerts: []

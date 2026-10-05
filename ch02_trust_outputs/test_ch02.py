@@ -4,7 +4,7 @@ import threading
 import pytest
 
 from ch02_trust_outputs.gateway import Gateway
-from ch02_trust_outputs.idem import Payments, RefundService, make_key
+from ch02_trust_outputs.idem import KeyReused, Payments, RefundService, make_key
 from ch02_trust_outputs.metrics import Day
 from ch02_trust_outputs.refund import (RefundArgs, ToolError, needs_approval,
                                        validate_refund_args)
@@ -165,3 +165,25 @@ def test_simultaneous_retries_cannot_both_slip_through():
 
 def test_a_different_conversation_is_a_different_refund():
     assert make_key("conv-77", "ORD-004829") != make_key("conv-78", "ORD-004829")
+
+
+def test_a_reused_key_with_a_different_request_is_refused_not_replayed():
+    pay = Payments()
+    svc = RefundService(pay)
+    first = RefundArgs(order_id="ORD-004829", amount_cents=1000, reason="damaged")
+    other = RefundArgs(order_id="ORD-004829", amount_cents=500, reason="late")
+    key = make_key("conv-77", first.order_id)
+    svc.issue_refund(first, key)
+    with pytest.raises(KeyReused):
+        svc.issue_refund(other, key)
+    assert pay.calls == [("ORD-004829", 1000)]       # nothing was paid twice
+
+
+def test_a_retry_that_picks_another_reason_is_still_a_replay():
+    pay = Payments()
+    svc = RefundService(pay)
+    a = RefundArgs(order_id="ORD-004829", amount_cents=1000, reason="damaged")
+    b = RefundArgs(order_id="ORD-004829", amount_cents=1000, reason="other")
+    key = make_key("conv-77", a.order_id)
+    assert svc.issue_refund(a, key) == svc.issue_refund(b, key)
+    assert len(pay.calls) == 1

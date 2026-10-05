@@ -17,6 +17,10 @@ line you would replace with a call to your own model.
 | `ch07_datasets/` | Stratified sampling, dataset cards with a content hash, a contamination guard, double-labeling and kappa, online sampling, implicit-feedback hints, redaction and a test-tenant guard |
 | `ch08_rag/` | A BM25 retriever, chunking, retrieval metrics (recall@k, MRR, context precision), grounding and citation checks, a triage sheet, an index-lifecycle check and a chunk-size sweep |
 | `ch09_when_calls_fail/` | Retry with jitter and `Retry-After`, a shared retry budget, a circuit breaker, a step guard, a loop guard and a quota manager |
+| `ch10_providers/` | A provider adapter and router with eligibility filters (data residency), health ranking, capacity-aware failover with hysteresis, service tiers, streaming that survives a cut, cancellation that reaches every layer, and one request through the whole path |
+| `ch11_traces/` | A small tracer (spans, context, `traceparent` handoffs, links), six span types, a traced context trim, tail sampling, redaction, a trace-cost estimate and trace shrinking; `optional/` holds an OpenTelemetry snippet that CI does not run |
+| `ch12_slos/` | Per-task SLIs, a judged-sample SLI with its interval, one SLO sheet with two layers, error budget and burn-rate alerts over two windows, deep dependency checks and a one-page report; `optional/` holds Prometheus rules that CI does not run |
+| `ch13_drift/` | Segment-aware baseline bands, drift-probe sets (with the judge's own), PSI, chi-square and Kolmogorov-Smirnov tests, RAG drift, and alert routing with precision; `optional/` holds an Evidently snippet that CI does not run |
 | `common/` | The scripted Relay stand-in and a fake clock, so a 30-second cooldown takes zero seconds in tests |
 
 More chapters will be added as the book is written.
@@ -37,9 +41,13 @@ python3 -m venv .venv
 .venv/bin/python -m ch07_datasets.demo          # Chapter 7: sampling, dataset card, labeling, redaction
 .venv/bin/python -m ch08_rag.demo               # Chapter 8: retrieval metrics, grounding, triage, index lifecycle
 .venv/bin/python -m ch09_when_calls_fail.demo    # every Chapter 9 defence, with printed output
+.venv/bin/python -m ch10_providers.demo         # Chapter 10: routing, failover, tiers, streams, cancellation
+.venv/bin/python -m ch11_traces.demo            # Chapter 11: span trees, handoffs, sampling, cost
+.venv/bin/python -m ch12_slos.demo              # Chapter 12: SLO sheet, error budget, burn-rate alerts
+.venv/bin/python -m ch13_drift.demo             # Chapter 13: bands, drift tests, probe sets, alert routing
 ```
 
-Python 3.10 or newer. Chapter 2 uses [Pydantic](https://docs.pydantic.dev/) (`pip install -r requirements.txt`) and Chapter 5 reuses that gateway; everything else uses only the standard library.
+Python 3.10 or newer. Chapter 2 uses [Pydantic](https://docs.pydantic.dev/) (`pip install -r requirements.txt`) and Chapter 5 reuses that gateway; everything else uses only the standard library. Files under `optional/` folders show a vendor library (OpenTelemetry, Prometheus, Evidently); they are not run by the tests or by CI, and each states the version it was checked with.
 Continuous integration runs the tests and the demos on Python 3.10 to 3.13.
 
 ## License

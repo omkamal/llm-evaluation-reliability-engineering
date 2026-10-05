@@ -2,7 +2,7 @@
 from pydantic import ValidationError
 
 from ch02_trust_outputs.gateway import Gateway
-from ch02_trust_outputs.idem import Payments, RefundService, make_key
+from ch02_trust_outputs.idem import KeyReused, Payments, RefundService, make_key
 from ch02_trust_outputs.metrics import Day
 from ch02_trust_outputs.refund import RefundArgs, needs_approval, validate_refund_args
 from ch02_trust_outputs.repair import MAX_ATTEMPTS, Failure, Reply, get_ticket
@@ -91,6 +91,11 @@ def main():
     key = make_key("conv-77", args.order_id)
     first, again = svc.issue_refund(args, key), svc.issue_refund(args, key)
     print(f"with a key: same answer {first == again}, payments ran {len(pay.calls)} time")
+    other = RefundArgs(order_id="ORD-004829", amount_cents=500, reason="late")
+    try:
+        svc.issue_refund(other, key)
+    except KeyReused:
+        print(f"same key, other amount: refused, payments still {len(pay.calls)}")
 
 
 if __name__ == "__main__":
