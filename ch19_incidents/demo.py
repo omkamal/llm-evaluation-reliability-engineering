@@ -31,7 +31,8 @@ def inc6_clock():
     with tracer.span("invoke_agent Planner", "agent", attrs={
             "gen_ai.conversation.id": "c-7731"}):
         clock.sleep(60)
-        args = {"order_id": ord_id(1), "amount_cents": 40000,
+        # the stranger's order from Chapter 17's telling of the same message
+        args = {"order_id": "ORD-004831", "amount_cents": 40000,
                 "reason": "other"}
         with tracer.span("execute_tool issue_refund", "tool", attrs={
                 "gen_ai.tool.name": "issue_refund", "relay.tool.tier": 2,
