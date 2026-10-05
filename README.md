@@ -26,7 +26,7 @@ python3 -m venv .venv
 ```
 
 Python 3.10 or newer. The code uses only the standard library; `pytest` is needed only to run the tests.
-Developed and tested on Python 3.12.
+Continuous integration runs the tests and the demos on Python 3.10 to 3.13.
 
 ## License
 
