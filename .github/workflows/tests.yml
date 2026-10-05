@@ -16,8 +16,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
-      - run: python -m ch01_anatomy.demo
-      - run: python -m ch02_trust_outputs.demo
+      - name: Run every chapter demo
+        run: |
+          for d in ch*/demo.py; do
+            m="${d%/demo.py}"
+            echo "== $m"
+            python -m "$m.demo"
+          done
       - run: python -m ch03_first_eval.run_evals v1
       - run: python -m ch03_first_eval.run_evals v2
-      - run: python -m ch09_when_calls_fail.demo
