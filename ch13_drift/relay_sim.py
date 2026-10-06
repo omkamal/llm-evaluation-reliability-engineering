@@ -10,6 +10,8 @@ from math import log, sqrt
 TOOLS = ["lookup_order", "lookup_policy", "reschedule_delivery",
          "issue_refund", "escalate_to_human"]
 BASE_MIX = (0.42, 0.30, 0.18, 0.03, 0.07)    # the last 28 days
+ACTION_TOOLS = ("reschedule_delivery", "issue_refund",   # tools that act
+                "escalate_to_human")
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,13 @@ def weekly_decay(seed, n=1000, base=0.91, slope=0.005, start=6,
         p = base - slope * max(0, week - start)
         rates.append(rng.gauss(p, sqrt(p * (1 - p) / n)))
     return rates
+
+
+def clean_days(rng, days=42, n=30000, base=0.81, swing=0.01):
+    """Days with nothing wrong at Relay's volume. Each day's true rate
+    wobbles by `swing` (weekday, traffic mix), then is measured on n."""
+    se = sqrt(base * (1 - base) / n)
+    return [rng.gauss(rng.gauss(base, swing), se) for _ in range(days)]
 
 
 @dataclass(frozen=True)

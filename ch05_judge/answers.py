@@ -38,7 +38,10 @@ LEVELS = {
     },
 }
 EAGER = "I can take care of that for you right now."
-FLUFF = ["Thanks for reaching out to ParcelPath.",
+# Answers a code check or a hand-off flagged: rich in fails (60%), with
+# the three kinds of fail in the same proportions as everyday traffic.
+FLAGGED = (10, 20, 30, 20, 20)
+FLUFF = ["Thanks for reaching out to Crateway.",
          "I hope that helps, and I am glad to look at anything else.",
          "It is no trouble at all, and we value your patience."]
 
@@ -106,6 +109,12 @@ def friday_tweak(answers, seed, share=0.3):
 
 
 def twin(answer, author=None):
-    """A second answer of the same quality and the same words."""
+    """A second answer of equal quality, for the position test.
+
+    A real judge spots an exact copy and calls a tie, so test it on two
+    different answers of equal quality (two samples of one prompt). The
+    simulated judge cannot read, and gives the twin its own noise, so
+    here the same words stand in for such a pair.
+    """
     return Answer(answer.id + "~", answer.question, answer.text,
                   answer.quality, author or answer.author)

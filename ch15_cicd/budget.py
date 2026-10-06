@@ -1,7 +1,7 @@
-"""What an eval run costs, and a budget per pull request.
+"""What an eval run costs, a budget per run, and a cache of answers.
 
 Prices are ILLUSTRATIVE (dollars per million tokens, input and output).
-The small tier is cheaper on both, as it should be.
+a-small is cheaper than a-large on both, as it should be.
 """
 import hashlib
 
@@ -23,24 +23,24 @@ def run_cost(model, n_trials, each=TRIAL):
 
 
 def within_budget(tier_name, cost):
-    """A run that costs more than its budget fails loudly."""
+    """Check a run's planned cost before its first call: a run over its
+    budget should refuse to start."""
     return cost <= BUDGETS[tier_name]
 
 
 class ResultCache:
     """Never pay twice for an answer you already have.
 
-    The key holds everything that can change the answer: model, prompt,
-    tool schemas, the case, and the trial number. Leave the trial number
-    out and five trials become one answer five times, and the noise you
-    wanted to measure disappears."""
+    The key holds everything that can change the answer. Leave the trial
+    number out and five trials become one answer five times, and the
+    noise you wanted to measure disappears."""
 
     def __init__(self):
         self.store, self.hits, self.misses = {}, 0, 0
 
     @staticmethod
-    def key(model, prompt, schemas, case_id, trial):
-        text = "|".join([model, prompt, schemas, case_id, str(trial)])
+    def key(*parts):
+        text = "|".join(str(part) for part in parts)
         return hashlib.sha256(text.encode()).hexdigest()[:16]
 
     def get(self, key, run):
@@ -50,3 +50,16 @@ class ResultCache:
             self.misses += 1
             self.store[key] = run()
         return self.store[key]
+
+
+# The files whose text shapes an answer: the prompt, the settings (model,
+# temperature, index, judge), the tool schemas and the judge's examples.
+SHAPES = ("prompts/system.md", "config/", "schemas/",
+          "evals/judge_examples.txt")
+
+
+def answer_key(files, case, trial):
+    """The cache key of one trial. It hashes texts, not version labels,
+    so an edit that forgot its version bump still misses the cache."""
+    texts = [files[p] for p in sorted(files) if p.startswith(SHAPES)]
+    return ResultCache.key(*texts, case["id"], case["text"], trial)

@@ -31,7 +31,8 @@ def show_retrieval(index):
           f"{lo:.2f} to {hi:.2f})")
     print(f"recall@3           {r['recall']:.2f}")
     print(f"MRR                {r['rr']:.2f}")
-    print(f"context precision  {r['precision']:.2f}")
+    print(f"context precision  {r['precision']:.2f}  (best possible "
+          f"{r['best']:.2f})")
     print(f"fact recall@3      {r['facts']:.2f}")
     q = BY_ID["Q03"]
     ids = [h.chunk.doc_id for h in index.bm25.search(q.text, k=3)]
@@ -51,8 +52,7 @@ def show_generation(index):
     print("mode           grounded  answer  citation")
     for mode in MODES:
         a = answer(q.text, hits, mode, q.must)
-        problem = citation_problem(a, hits) or ("none" if not a.cites
-                                                else "ok")
+        problem = citation_problem(a, hits) or "ok"
         right = "right" if correct(a, q) else "wrong"
         print(f"{mode:13} {groundedness(a.text, context):9.2f}  "
               f"{right:6}  {problem}")
@@ -61,22 +61,27 @@ def show_generation(index):
 def show_triage(index):
     print("== triage, grounded mode")
     tally = {True: Counter(), False: Counter()}
-    partial = 0
+    passage = second = 0
     for q in QUERIES:
         hits = index.bm25.search(q.text, k=3)
         a = answer(q.text, hits, "grounded", q.must)
         verdict = diagnose(q, hits, a, CURRENT)
         tally[q.answerable][verdict] += 1
         found = {h.chunk.doc_id for h in hits} & set(q.gold)
-        partial += verdict == "retrieval fault" and bool(found)
+        if verdict == "retrieval fault" and found:
+            if found == set(q.gold):
+                passage += 1         # every page came back, not the fact
+            else:
+                second += 1          # one page of two came back
     for answerable, label in ((True, "answerable (44)"),
                               (False, "unanswerable (6)")):
         parts = [f"{v} {k}" for k, v in tally[answerable].most_common()]
         print(f"{label}: {', '.join(parts)}")
     faults = tally[True]["retrieval fault"]
-    print(f"{faults} retrieval faults: {faults - partial} found no right "
-          f"document,")
-    print(f"{partial} found one but missed a fact")
+    print(f"{faults} retrieval faults: "
+          f"{faults - passage - second} found no right document,")
+    print(f"{passage} the page but not its passage, "
+          f"{second} only one of two pages")
 
 
 def show_stale(v1):
@@ -92,10 +97,12 @@ def show_stale(v1):
 
 def show_chunks():
     print("== chunk size, k=3")
-    print("words chunks doc-recall fact-recall precision context-words")
+    print("words chunks doc-recall fact-recall precision best "
+          "context-words")
     for size, n, s in sweep(DOCS, QUERIES, [12, 24, 48, 96]):
         print(f"{size:5} {n:6} {s['recall']:10.2f} {s['facts']:11.2f}"
-              f" {s['precision']:9.2f} {s['words']:13.0f}")
+              f" {s['precision']:9.2f} {s['best']:4.2f}"
+              f" {s['words']:13.0f}")
 
 
 def show_lifecycle(v1):
@@ -108,6 +115,11 @@ def show_lifecycle(v1):
                          TODAY)
     ok, why = release_gate(forgot, v2, DOCS, QUERIES)
     print("gate v3:", "pass" if ok else "BLOCK")
+    for reason in why:
+        print("  ", reason)
+    rechunk = build_index("v4", DOCS, TODAY, size=12, overlap=3)
+    ok, why = release_gate(rechunk, v2, DOCS, QUERIES)
+    print("gate v4, 12-word chunks:", "pass" if ok else "BLOCK")
     for reason in why:
         print("  ", reason)
     reg = IndexRegistry()
@@ -138,8 +150,9 @@ def show_calibration():
     a = agreement()
     print(f"judge pass/fail vs human: tp {a['tp']}, fp {a['fp']}, "
           f"fn {a['fn']}, tn {a['tn']}")
+    lo, hi = a["kappa_ci"]
     print(f"TPR {a['tpr']:.2f}, TNR {a['tnr']:.2f}, "
-          f"kappa {a['kappa']:.2f}")
+          f"kappa {a['kappa']:.2f} (95% interval {lo:.2f} to {hi:.2f})")
 
 
 def show_tool(v1):

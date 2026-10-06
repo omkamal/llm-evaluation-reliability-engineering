@@ -12,12 +12,12 @@ MAX_ATTEMPTS = 3
 @dataclass
 class Reply:
     text: str
-    finish_reason: str = "stop"          # "stop", or "length" if the token limit cut it off
+    finish_reason: str = "stop"   # or "length" (cut off), or "refusal"
 
 
 @dataclass
 class Failure:
-    reason: str                          # "truncated" or "invalid_after_repair"
+    reason: str        # "refused", "truncated", "invalid_after_repair"
     errors: list
 
 
@@ -31,6 +31,8 @@ def repair_prompt(bad_output, schema, errors):
 def get_ticket(prompt, call_llm):
     reply = call_llm(prompt)
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if reply.finish_reason == "refusal":
+            return Failure("refused", [])       # not a format problem
         try:
             return Ticket.model_validate_json(reply.text)
         except ValidationError as e:

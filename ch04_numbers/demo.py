@@ -3,20 +3,29 @@
     python3 -m ch04_numbers.demo
 """
 import random
+from math import sqrt
+from statistics import stdev
 
 from ch03_first_eval.cases import CASES
 from ch03_first_eval.run_evals import run
 from ch04_numbers.ab_scores import prompt_ab_scores
-from ch04_numbers.noisy import (case_scores, flagged_count, many_trials,
-                                one_run)
-from ch04_numbers.power import (MILLER_VAR, cases_needed, detectable_gap,
-                                independent_var)
+from ch04_numbers.noisy import (case_scores, false_alarm_count,
+                                flagged_count, many_trials, one_run)
+from ch04_numbers.power import (MILLER_VAR, cases_needed, detectable_drop,
+                                detectable_gap, independent_var)
 from ch04_numbers.report_card import report_card
 from ch04_numbers.stats import (
-    bootstrap_ci, clustered_se, difference_ci, mean, paired_bootstrap,
-    paired_vs_unpaired_se, pass_at_k, pass_at_k_rate, pass_hat_k,
-    pass_hat_k_rate, proportion_ci, sign_test_p, unpaired_bootstrap,
-    wilson_ci)
+    bootstrap_ci, cluster_bootstrap_ci, clustered_se, coverage,
+    difference_ci, mean, paired_bootstrap, paired_vs_unpaired_se,
+    pass_at_k, pass_at_k_rate, pass_hat_k, pass_hat_k_rate, proportion_ci,
+    sign_test_p, unpaired_bootstrap, wilson_ci, wilson_difference_ci)
+
+TOPICS = [case["topic"] for case in CASES]
+
+
+def wald(wins, n):
+    """The formula's interval (the Wald interval), unclipped."""
+    return proportion_ci(wins, n)[2]
 
 
 def verdicts(version):
@@ -65,11 +74,17 @@ def error_bars():
     print(f"50 cases: SE {proportion_ci(40, 50)[1]:.3f}; "
           f"200 cases: SE {proportion_ci(160, 200)[1]:.3f}")
     for name, wins in (("v1", 28), ("v2", 23)):
-        p, _, (lo, hi) = proportion_ci(wins, 30)
-        print(f"Relay {name}, {wins} of 30: {p:.2f}, "
-              f"interval {lo:.2f} to {min(hi, 1.0):.2f}")
-    lo, hi = wilson_ci(28, 30)
-    print(f"Wilson interval for 28 of 30: {lo:.2f} to {hi:.2f}")
+        lo, hi = wilson_ci(wins, 30)
+        wlo, whi = wald(wins, 30)
+        print(f"Relay {name}, {wins} of 30: {wins / 30:.2f}, Wilson "
+              f"{lo:.2f} to {hi:.2f} (formula {wlo:.2f} to {whi:.2f})")
+    lo, hi = wilson_ci(30, 30)
+    wlo, whi = wald(30, 30)
+    print(f"30 of 30: Wilson {lo:.2f} to {hi:.2f} "
+          f"(formula {wlo:.2f} to {whi:.2f})")
+    print(f"true rate 0.95, 30 cases: covered by Wilson "
+          f"{coverage(wilson_ci, 30, 0.95):.0%}, "
+          f"by the formula {coverage(wald, 30, 0.95):.0%}")
 
 
 def overlap():
@@ -84,25 +99,24 @@ def overlap():
 
 def sample_size():
     print("== how many cases")
-    print("gap     independent  paired")
+    print("drop    separate  paired")
     for points in (10, 5, 3, 2):
         gap = points / 100
-        indep = cases_needed(gap, independent_var(0.85))
+        alone = cases_needed(gap, independent_var(0.85, 0.85 - gap))
         paired = cases_needed(gap, MILLER_VAR)
-        print(f"{points:>2} pts  {indep:>10,}  {paired:>6,}")
-    print("30 cases can reliably show a gap of at least:")
-    alone = detectable_gap(30, independent_var(0.85))
+        print(f"{points:>2} pts  {alone:>8,}  {paired:>6,}")
+    print("30 cases catch, 4 times in 5, a gap of at least:")
+    alone = detectable_drop(30, 0.85)
     paired = detectable_gap(30, MILLER_VAR)
-    print(f"  {alone:.2f} independent, {paired:.2f} paired")
+    print(f"  {alone:.2f} scored separately, {paired:.2f} paired")
 
 
 def clusters():
     print("== clusters")
-    topics = [case["topic"] for case in CASES]
     for version in ("v1", "v2"):
         scores = verdicts(version)
         naive = proportion_ci(sum(scores), len(scores))[1]
-        clustered = clustered_se(scores, topics)
+        clustered = clustered_se(scores, TOPICS)
         print(f"Relay {version}: SE {naive:.3f} treating cases as "
               f"independent, {clustered:.3f} by topic "
               f"({clustered / naive:.1f}x)")
@@ -118,8 +132,8 @@ def bootstrap():
     print("three resample means:", " ".join(f"{m:.2f}" for m in means))
     rate, (lo, hi) = bootstrap_ci(sample, seed=11)
     print(f"10,000 resamples: {rate:.2f}, interval {lo:.2f} to {hi:.2f}")
-    _, _, (nlo, nhi) = proportion_ci(24, 30)
-    print(f"normal approximation:  interval {nlo:.2f} to {nhi:.2f}")
+    wlo, whi = wilson_ci(24, 30)
+    print(f"Wilson formula:   interval {wlo:.2f} to {whi:.2f}")
 
 
 def friday_paired():
@@ -130,10 +144,12 @@ def friday_paired():
     print(f"v1 {sum(v1)} passes, v2 {sum(v2)}: "
           f"{better} cases better, {worse} worse, "
           f"{diffs.count(0)} unchanged")
-    gap, (lo, hi) = difference_ci(sum(v1), 30, sum(v2), 30)
+    gap, (lo, hi) = wilson_difference_ci(sum(v1), 30, sum(v2), 30)
     print(f"unpaired: {gap:+.2f} [{lo:+.2f}, {hi:+.2f}]")
     gap, (lo, hi) = paired_bootstrap(v1, v2)
     print(f"paired:   {gap:+.2f} [{lo:+.2f}, {hi:+.2f}]")
+    gap, (lo, hi) = cluster_bootstrap_ci(diffs, TOPICS)
+    print(f"by topic: {gap:+.2f} [{lo:+.2f}, {hi:+.2f}]")
     print(f"sign test p = {sign_test_p(better, worse):.2f}")
 
 
@@ -170,10 +186,28 @@ def card():
     v1 = case_scores(many_trials("v1", 5, rng))
     v2 = case_scores(many_trials("v2", 5, rng))
     again = case_scores(many_trials("v1", 5, rng))
-    print("Relay-30, 5 trials per case")
-    print(*report_card("v1", "v2", v1, v2), sep="\n")
+    print("Relay-30, 5 trials per case, topics as clusters")
+    print(*report_card("v1", "v2", v1, v2, clusters=TOPICS), sep="\n")
     print("Same version twice (an A/A check)")
-    print(*report_card("v1 run A", "v1 run B", v1, again), sep="\n")
+    print(*report_card("v1 run A", "v1 run B", v1, again,
+                       clusters=TOPICS), sep="\n")
+
+
+def aa_false_alarms():
+    print("== A/A false alarms (Exercise 2)")
+    alarms = false_alarm_count(5, 400)
+    print(f"v1 against itself, 5 trials per case: zero excluded "
+          f"{alarms} times in 400")
+
+
+def ten_trials_are_not_ten_cases():
+    print("== ten trials of 30 cases (Check your understanding, 6)")
+    many, few = (proportion_ci(0.89 * n, n)[1] for n in (300, 30))
+    print(f"at 0.89: SE {many:.3f} with n = 300, {few:.3f} with n = 30")
+    for seed in range(3):
+        rates = case_scores(many_trials("v1", 10, random.Random(seed)))
+        print(f"seed {seed}: SE over the 30 case rates "
+              f"{stdev(rates) / sqrt(30):.3f}")
 
 
 def main():
@@ -189,6 +223,8 @@ def main():
     prompt_ab_test()
     how_often_flagged()
     card()
+    aa_false_alarms()
+    ten_trials_are_not_ten_cases()
 
 
 if __name__ == "__main__":

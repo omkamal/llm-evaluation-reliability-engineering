@@ -56,8 +56,9 @@ async def serve(w, req, user, conversation, say):
     try:
         provider = route(w.catalog, req, w.signals())
     except NoEligibleProvider:
+        down = {n for n, b in w.breakers.items() if b.state == "open"}
         say(f"no eligible provider with room: tier "
-            f"{choose_tier(w.catalog, req)}")
+            f"{choose_tier(w.catalog, req, tripped=down)}")
         return None
     say(f"route: {provider.name}")
     if req.region not in provider.regions:
@@ -74,6 +75,9 @@ async def serve(w, req, user, conversation, say):
             break
         action, why = recovery(res)
         say(f"attempt {attempt}: stream {res.why}, {action}: {why}")
+        if attempt == 2:
+            say("backup failed twice: hand off to a human")
+            return None
         if not w.retries.allow_retry():
             say("retry budget empty: hand off to a human")
             return None

@@ -4,7 +4,7 @@ from datetime import date
 from ch08_rag.corpus import DOCS
 from ch08_rag.lifecycle import build_index
 
-PROMPT_V14 = ("You are Relay, ParcelPath's assistant. Answer policy "
+PROMPT_V14 = ("You are Relay, Crateway's assistant. Answer policy "
               "questions only from lookup_policy. Act only when asked.")
 PROMPT_V15 = PROMPT_V14 + (" Quote numbers exactly as the policy page "
                            "states them; never state a window from memory.")

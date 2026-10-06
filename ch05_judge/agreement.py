@@ -52,9 +52,21 @@ def tpr_tnr(judge, expert, positive="pass"):
             tn / (tn + fp) if tn + fp else 0.0)
 
 
+def kappa_at_share(tpr, tnr, fail_share):
+    """The kappa a judge with this TPR and TNR scores when `fail_share`
+    of the answers fail. Same judge, different mix, different kappa."""
+    good = 1 - fail_share
+    judge_pass = good * tpr + fail_share * (1 - tnr)
+    po = good * tpr + fail_share * tnr
+    pe = judge_pass * good + (1 - judge_pass) * fail_share
+    return 1.0 if pe == 1 else (po - pe) / (1 - pe)
+
+
 def landis_koch(kappa):
     """Words for a kappa value (Landis and Koch, 1977)."""
-    for limit, word in ((0.0, "poor"), (0.20, "slight"), (0.40, "fair"),
+    if kappa < 0:
+        return "poor"
+    for limit, word in ((0.20, "slight"), (0.40, "fair"),
                         (0.60, "moderate"), (0.80, "substantial")):
         if kappa <= limit:
             return word

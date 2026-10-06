@@ -1,4 +1,5 @@
-"""Where a feature really stands on the five-step maturity ladder.
+"""Where a feature really stands on the five-step maturity ladder (this
+book's own framework, not an industry standard).
 
 A level is the highest step whose controls are ALL in place, with every
 step below it. Tools bought do not count; controls that work do.
@@ -15,10 +16,10 @@ CONTROLS = {
     3: (("SLO sheet and burn-rate pages", 12),
         ("bounded retries and budgets", 9), ("traces", 11),
         ("eval gate and staged releases", 15)),
-    4: (("one accountable owner per item", 20),
+    4: (("guard before every tier 2 tool", 17),
         ("scoped credentials and review line", 18),
         ("kill switch and pin, drilled", 19),
-        ("readiness review each quarter", 20)),
+        ("one accountable owner per item", 20)),
 }
 
 

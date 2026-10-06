@@ -24,8 +24,9 @@ def trace_rows(spans):
                          f"conversation {a['gen_ai.conversation.id']}"))
         elif sp.kind == "tool" and a["relay.tool.tier"] >= 1:
             args = json.loads(a["relay.tool.args"])
+            # the reason code stays in the trace, to keep one line short
             shown = " ".join(f"{k}={v}" for k, v in args.items()
-                             if k != "reason")   # free text stays out
+                             if k != "reason")
             rows.append((sp.start, "trace",
                          f"{a['gen_ai.tool.name']} {shown}"))
     return rows

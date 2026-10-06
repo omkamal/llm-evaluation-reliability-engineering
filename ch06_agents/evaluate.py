@@ -18,9 +18,12 @@ def run_case(agent, case, customer=None):
 
 
 def reply_ok(case, run):
-    """Final-answer grading: does the last message say the right thing?"""
+    """Final-answer grading, a keyword test as in Chapter 3: does the last
+    message say the right thing, without denying it?"""
     last = run["transcript"][-1][1]
-    return re.search(case["says"], last, re.I) is not None
+    deny = case.get("must_not")
+    return (re.search(case["says"], last, re.I) is not None
+            and not (deny and re.search(deny, last, re.I)))
 
 
 def state_problems(case, run):

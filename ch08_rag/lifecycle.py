@@ -42,6 +42,10 @@ def stale_docs(index, source):
         elif indexed[1] != fingerprint(doc):
             problems.append(
                 f"{doc.id}: text changed, still v{doc.version}")
+    live = {doc.id for doc in source}
+    for doc_id in index.manifest:     # the other direction: retired pages
+        if doc_id not in live:
+            problems.append(f"{doc_id}: in the index, deleted at source")
     return problems
 
 
@@ -77,12 +81,19 @@ class IndexRegistry:
 
 
 def release_gate(candidate, live, source, queries, k=3, margin=0.05):
-    """Block a re-index that is stale or retrieves worse than live."""
+    """Block a re-index that is stale or retrieves worse than live.
+
+    "Worse" means a fall of more than `margin` in hit rate (did a right
+    page come back?) or in fact recall (did the passage with the fact?):
+    a re-chunk can keep the first and lose the second.
+    """
     reasons = stale_docs(candidate, source)
-    new = evaluate(candidate.bm25, queries, k)["hit"]
-    old = evaluate(live.bm25, queries, k)["hit"]
-    if new < old - margin:
-        reasons.append(f"hit rate@{k} fell from {old:.2f} to {new:.2f}")
+    new = evaluate(candidate.bm25, queries, k)
+    old = evaluate(live.bm25, queries, k)
+    for key, name in (("hit", "hit rate"), ("facts", "fact recall")):
+        if new[key] < old[key] - margin:
+            reasons.append(f"{name}@{k} fell from {old[key]:.2f} "
+                           f"to {new[key]:.2f}")
     return not reasons, reasons
 
 

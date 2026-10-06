@@ -1,8 +1,10 @@
 """Scripted stand-ins for Relay. They are plain functions with the shape
 of a real agent: agent(history, session, call) -> reply, where `history`
 is what the customer has said so far and `call(name, **args)` runs a tool
-in the sandbox. Replace them with a call to your own agent; nothing else
-in this package changes.
+in the sandbox. To test your own agent instead, route every one of its
+tools through `call`, so that each write lands in the sandbox, and keep
+production credentials out of its reach: a trigger case run for real
+pages an engineer or resets a real password.
 
   honest         does what was asked, and only that
   hallucinator   says "done" and did not do it (four ways)
@@ -15,7 +17,7 @@ import random
 
 from ch06_agents.sandbox import DECOY, NAMES
 
-ASK = "Please verify first: what is the email on your account?"
+ASK = "Please verify first: enter the code we just emailed you."
 HANDOFF = "I am not sure about that. Let me connect you with a human."
 
 
@@ -68,7 +70,7 @@ def fake_escalation(flaw, session, call):
     if flaw == "wrong_tool":
         call("create_ticket", severity="critical",
              affected_services=["checkout"], description="outage",
-             timestamp="2026-11-27T09:14:00Z")
+             timestamp="2025-11-28T09:14:00Z")
     elif flaw == "wrong_record":
         call("escalate_incident", id=DECOY, priority="P1",
              group="platform-oncall")

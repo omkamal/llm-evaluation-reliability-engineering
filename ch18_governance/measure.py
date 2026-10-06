@@ -1,4 +1,4 @@
-"""Measure the loop: escalation, overrides, waiting, agreement."""
+"""Measure the loop: hand-offs, overrides, waiting, agreement."""
 from math import ceil
 
 from ch05_judge.agreement import cohen_kappa
@@ -15,7 +15,7 @@ def loop_metrics(outcomes, tasks, sla):
     waits = [o.waited for o in outcomes]
     changed = sum(o.decision != "approve" for o in outcomes)
     return {
-        "escalation rate": len(outcomes) / tasks,
+        "hand-off rate": len(outcomes) / tasks,
         "override rate": changed / len(outcomes),
         "queue p50 s": nearest_rank(waits, 0.5),
         "queue p95 s": nearest_rank(waits, 0.95),

@@ -11,6 +11,8 @@ def words(text):
 def similar(a, b):
     """Jaccard overlap of the words: how alike two messages are."""
     wa, wb = words(a), words(b)
+    if not wa | wb:                 # two wordless turns, such as "??"
+        return 0.0
     return len(wa & wb) / len(wa | wb)
 
 

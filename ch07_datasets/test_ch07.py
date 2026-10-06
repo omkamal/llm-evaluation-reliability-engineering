@@ -10,12 +10,13 @@ from ch07_datasets.golden import golden_card, golden_v3
 from ch07_datasets.implicit import hints, similar, thumbs_share
 from ch07_datasets.labeling import (make_items, majority_right, summary)
 from ch07_datasets.redact import luhn_ok, redact
-from ch07_datasets.relay_cases import (edge_cases, monday_cases,
+from ch07_datasets.relay_cases import (MONDAY_TEXTS, edge_cases,
+                                       from_trace, monday_cases,
                                        traffic_log)
 from ch07_datasets.sampling import (coverage, in_online_sample,
                                     random_sample, score_record,
                                     stratified_sample)
-from ch07_datasets.sandbox import (LiveTenantError, Tenant,
+from ch07_datasets.sandbox import (LiveTenantError, Tenant, bind_orders,
                                    require_test_tenant, seed_orders)
 from ch07_datasets.scripted import CONVERSATIONS, conv
 
@@ -111,12 +112,29 @@ def test_the_tracker_paraphrase_slips_through():
     assert overlap("It said delivery today, where is it?", ref) == 0.0
 
 
+def test_a_case_with_no_words_is_not_a_leak():
+    assert overlap("?!", "any prompt at all") == 0.0
+    assert find_leaks([{"id": "x", "text": "??"}], REFERENCES) == []
+
+
 # --- labeling -------------------------------------------------------------
 def test_guideline_v1_gives_low_kappa_and_v2_fixes_it():
-    items = make_items()
-    v1, v2 = summary(items, 1), summary(items, 2)
-    assert v1["kappa"] < 0.8 <= v2["kappa"]
+    # v2 is checked on a fresh batch, not on the items that wrote it
+    v1, v2 = summary(make_items(), 1), summary(make_items(seed=4), 2)
     assert round(v1["kappa"], 2) == 0.65 and round(v2["kappa"], 2) == 0.95
+    lo1, hi1 = v1["kappa_ci"]
+    lo2, hi2 = v2["kappa_ci"]
+    assert (round(lo1, 2), round(hi1, 2)) == (0.53, 0.76)
+    assert (round(lo2, 2), round(hi2, 2)) == (0.89, 0.99)
+    assert hi1 < 0.8 < lo2          # each whole interval on its side
+
+
+def test_kappa_interval_is_wide_on_50_items():
+    # why the deliverable asks for 100 items: on 50, v1 cannot be told
+    # apart from the 0.8 bar
+    items = make_items(n=50)
+    lo, hi = summary(items, 1)["kappa_ci"]
+    assert lo < 0.8 < hi
 
 
 def test_disagreements_cluster_on_the_kinds_the_guideline_skips():
@@ -179,6 +197,12 @@ def test_hints_are_not_verdicts():
     assert hints(CONVERSATIONS[6]) == ["rephrased"]         # s7: fine
 
 
+def test_wordless_turns_do_not_crash_the_hints():
+    turns = [("customer", "??"), ("relay", "Sorry?"), ("customer", "??")]
+    assert hints(conv("x", "ok", turns)) == []
+    assert similar("??", "!!") == 0.0
+
+
 def test_reopening_exactly_at_48_hours_counts_and_49_does_not():
     turns = [("customer", "hi")]
     assert hints(conv("x", "ok", turns, reopened=48)) == ["reopened_48h"]
@@ -228,15 +252,31 @@ def test_the_redactor_misses_names_and_addresses_and_we_know_it():
 # --- test environments -------------------------------------------------------
 def test_evals_refuse_a_live_tenant():
     require_test_tenant(Tenant("eval-sandbox", "test"))
-    with pytest.raises(LiveTenantError, match="parcelpath-prod"):
-        require_test_tenant(Tenant("parcelpath-prod", "live"))
+    with pytest.raises(LiveTenantError, match="crateway-prod"):
+        require_test_tenant(Tenant("crateway-prod", "live"))
 
 
 def test_a_test_tenant_with_a_real_looking_name_is_refused_too():
     with pytest.raises(LiveTenantError):
-        require_test_tenant(Tenant("parcelpath-prod", "test"))
+        require_test_tenant(Tenant("crateway-prod", "test"))
     with pytest.raises(LiveTenantError):
         require_test_tenant(Tenant("eval-sandbox", "live"))
+
+
+def test_a_trace_case_is_bound_to_a_seeded_order():
+    assert MONDAY_TEXTS[1] == "Where is order <ORDER_1>?"
+    assert from_trace(MONDAY_TEXTS[1]) == "Where is order ORD-900001?"
+    assert from_trace("Order ORD-004829 is late") == "Order ORD-900001 is late"
+    with pytest.raises(ValueError):
+        bind_orders("<ORDER_1> <ORDER_2> <ORDER_3> <ORDER_4>", seed_orders())
+
+
+def test_every_order_in_the_golden_set_exists_in_the_test_tenant():
+    import re
+    seeded = {o["order_id"] for o in seed_orders()}
+    named = {m for c in golden_v3()
+             for m in re.findall(r"ORD-\d{6}|<ORDER_\d+>", c["text"])}
+    assert named and named <= seeded
 
 
 def test_seeded_orders_are_fake_deterministic_and_in_a_reserved_range():

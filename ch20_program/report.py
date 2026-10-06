@@ -1,8 +1,8 @@
 """An honest one-page quarterly report on the program.
 
 Every line says whether its number was measured or assumed. A line with
-no basis is refused, so an invented return on investment cannot slip in
-looking like a fact.
+no basis (none given, or any other word) is refused, so an invented
+return on investment cannot slip in looking like a fact.
 """
 from dataclasses import dataclass
 from textwrap import fill
@@ -13,11 +13,13 @@ BASES = ("measured", "assumed")
 @dataclass(frozen=True)
 class Line:
     text: str
-    basis: str = "measured"
+    basis: str = ""         # "measured" or "assumed"; nothing is refused
 
 
 def expected_loss_avoided(reviews, error_rate, loss_usd, review_usd):
-    """(cost of the reviews, expected loss they prevent), in dollars."""
+    """(cost of the reviews, the most expected loss they can prevent), in
+    dollars: the upper bound holds only if every review catches the
+    error (Chapter 18 measures how many do)."""
     return reviews * review_usd, reviews * error_rate * loss_usd
 
 

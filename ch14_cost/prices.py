@@ -1,4 +1,6 @@
-"""Illustrative prices. Every number here is invented, not a quote.
+"""Illustrative round prices, at the low end of the output-to-input
+range (4 times); they equal one provider's older list prices, and are
+not a quote for any model you use.
 
 Two tiers, and the small one is cheaper per token on BOTH sides, as it
 should be. Prices are dollars per million tokens: read your own list.

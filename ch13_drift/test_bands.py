@@ -5,7 +5,8 @@ from datetime import date
 import pytest
 
 from ch13_drift.bands import (check_rate, false_alarm_rate, first_alert,
-                              mean_band, noise_band, rate_band)
+                              mean_band, noise_band, rate_band,
+                              segment_band)
 from ch13_drift.online import judged_by_segment
 from ch13_drift.relay_sim import SEGMENTS, weekly_decay, week_of_conversations
 
@@ -51,9 +52,35 @@ def test_first_alert_needs_flags_in_a_row():
 def test_persistence_cuts_false_alarms():
     one = false_alarm_rate(0.91, 1000, 16, 1)
     two = false_alarm_rate(0.91, 1000, 16, 2)
-    assert 0.40 < one < 0.60          # about half of clean runs cry wolf
-    assert two < 0.06                 # two in a row almost never does
+    assert 0.28 < one < 0.32          # drops only: about 30%, not 53%
+    assert two < 0.01                 # two in a row: under 1%
+    assert (round(one, 3), round(two, 4)) == (0.300, 0.0088)  # printed
     assert false_alarm_rate(0.91, 1000, 16, 1) == one      # seeded
+
+
+def test_try_it_3_wait_for_a_third():
+    assert false_alarm_rate(0.91, 1000, 16, 3) == 0.0003
+    rates = weekly_decay(34)
+    lo, _ = rate_band(0.91, 1000)
+    assert first_alert([r < lo for r in rates], 3) + 1 == 13
+
+
+def test_segment_band_takes_the_wider_of_luck_and_history():
+    se = 0.0023                          # 81% on 30,000 tasks a day
+    still = [0.81, 0.8101, 0.8099, 0.81]           # luck only
+    lo, hi = segment_band(still, se)
+    assert hi - lo == pytest.approx(4 * se)
+    wobbly = [0.80, 0.82, 0.81, 0.79, 0.83, 0.81]  # weekdays, mix
+    lo, hi = segment_band(wobbly, se)
+    assert (round(lo, 3), round(hi, 3)) == (0.782, 0.838)   # 2 x 1.4 pts
+
+
+def test_a_probe_that_never_varies_still_has_a_band():
+    assert noise_band([0.95] * 10) == (0.95, 0.95)        # stdev 0
+    lo, hi = noise_band([0.95] * 10, floor=1 / 40)
+    assert (round(lo, 3), round(hi, 3)) == (0.925, 0.975)
+    assert noise_band([0.9, 0.94] * 5, floor=0.001) == noise_band(
+        [0.9, 0.94] * 5)                                  # floor unused
 
 
 def test_noise_band_is_mean_plus_minus_two_sd():

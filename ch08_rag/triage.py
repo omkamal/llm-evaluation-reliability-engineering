@@ -15,8 +15,9 @@ def diagnose(query, hits, answer, current):
         return "ok" if grounded else "right but ungrounded"
     if not set(query.gold) <= ids:                 # question 1
         return "retrieval fault"
-    if answer.abstained or not grounded:           # question 2
-        return "generation fault"
+    had_fact = fact_recall([h.chunk.text for h in hits], query.must) == 1
+    if answer.abstained or not grounded or had_fact:   # question 2
+        return "generation fault"   # ignored, embellished or distracted
     # Right document, faithful answer, still wrong: blame the source?
     live = " ".join(current[d].text for d in query.gold)
     stale = any(h.chunk.version != current[h.chunk.doc_id].version

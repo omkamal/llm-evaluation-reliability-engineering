@@ -1,7 +1,7 @@
 """Rank the eligible providers: health first, then speed, then cost."""
 from dataclasses import dataclass
 
-from ch10_providers.catalog import NoEligibleProvider, eligible
+from ch10_providers.catalog import NoEligibleProvider, available
 from ch10_providers.health import SLOW
 
 W_HEALTH, W_SPEED, W_THRIFT = 0.6, 0.3, 0.1
@@ -28,17 +28,29 @@ def score(provider, s):
     return W_HEALTH * health(s) + W_SPEED * speed + W_THRIFT * thrift
 
 
+def tripped(signals):
+    return {name for name, s in signals.items() if s.breaker == "open"}
+
+
 def rank(catalog, req, signals):
     """Eligible providers with room, best first; ties are settled."""
-    usable = [p for p in eligible(catalog, req)
-              if p.free_slots > 0 and signals[p.name].breaker != "open"]
+    usable = available(catalog, req, tripped(signals))
     # equal to 2 decimals counts as a tie: cheaper wins, then the name
     return sorted(usable, key=lambda p: (
         -round(score(p, signals[p.name]), 2), p.cost, p.name))
 
 
-def route(catalog, req, signals):
+def route(catalog, req, signals, primary=None, share=1.0, draw=0.0):
+    """The best provider, except that a score gap never moves the
+    primary: it keeps the share hysteresis gives it (trimmed as its
+    slots run out), and the score decides who takes the rest."""
     ranked = rank(catalog, req, signals)
     if not ranked:
         raise NoEligibleProvider(req.region)   # never relax a hard filter
-    return ranked[0]
+    rest = [p for p in ranked if p.name != primary]
+    if len(rest) == len(ranked) or not rest:
+        return ranked[0]
+    room = min(1.0, signals[primary].headroom / HEADROOM_OK)
+    if draw < share * room:
+        return next(p for p in ranked if p.name == primary)
+    return rest[0]

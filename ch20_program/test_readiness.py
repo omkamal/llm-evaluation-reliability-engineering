@@ -1,11 +1,14 @@
 """Tests for the readiness scorecard."""
 from datetime import date
 
+import pytest
+
 from ch20_program import relay_data as rd
 from ch20_program.readiness import QUESTIONS, Answer, review, standing
 
 TODAY = date(2026, 10, 5)
 FRESH = "2026-10-01"
+PEOPLE = rd.ROSTER          # Sam is away, Jonas has left
 
 
 def all_yes(**changes):
@@ -15,13 +18,13 @@ def all_yes(**changes):
 
 
 def test_all_fresh_yes_is_launch():
-    assert review(QUESTIONS, all_yes(), TODAY) == ("launch", [])
+    assert review(QUESTIONS, all_yes(), TODAY, PEOPLE) == ("launch", [])
 
 
 def test_a_named_risk_on_a_non_blocker_is_launch_with_named_risks():
     risky = Answer("partly", FRESH, "cost budget covers chat only",
                    "Sam", 14)
-    verdict, why = review(QUESTIONS, all_yes(cost=risky), TODAY)
+    verdict, why = review(QUESTIONS, all_yes(cost=risky), TODAY, PEOPLE)
     assert verdict == "launch with named risks"
     assert why == ["cost: partly; cost budget covers chat only; "
                    "Sam, 14 days"]
@@ -31,7 +34,8 @@ def test_a_risk_without_an_owner_or_a_date_is_not_named():
     for gap in (Answer("partly", FRESH, "", "Sam", 14),
                 Answer("partly", FRESH, "r", "", 14),
                 Answer("partly", FRESH, "r", "Sam", 0)):
-        verdict, why = review(QUESTIONS, all_yes(cost=gap), TODAY)
+        verdict, why = review(QUESTIONS, all_yes(cost=gap), TODAY,
+                              PEOPLE)
         assert verdict == "not yet"
         assert why == ["cost: partly; the risk has no name, owner "
                        "or date"]
@@ -39,20 +43,21 @@ def test_a_risk_without_an_owner_or_a_date_is_not_named():
 
 def test_a_blocker_must_be_a_fresh_yes():
     named = Answer("partly", FRESH, "r", "Sam", 14)
-    verdict, why = review(QUESTIONS, all_yes(kill=named), TODAY)
+    verdict, why = review(QUESTIONS, all_yes(kill=named), TODAY,
+                          PEOPLE)
     assert (verdict, why) == ("not yet", ["kill: partly"])
 
 
 def test_a_no_stops_even_a_non_blocker():
     verdict, why = review(QUESTIONS, all_yes(creds=Answer("no", FRESH)),
-                          TODAY)
+                          TODAY, PEOPLE)
     assert (verdict, why) == ("not yet", ["creds: no"])
 
 
 def test_a_missing_answer_is_a_no():
     answers = all_yes()
     del answers["trace"]
-    assert review(QUESTIONS, answers, TODAY) == (
+    assert review(QUESTIONS, answers, TODAY, PEOPLE) == (
         "not yet", ["trace: no, no answer"])
 
 
@@ -64,7 +69,8 @@ def test_old_evidence_turns_a_yes_into_a_partly():
 
 def test_a_stale_blocker_stops_the_launch():
     old = Answer("yes", "2026-05-01", "r", "Priya", 14)
-    verdict, why = review(QUESTIONS, all_yes(gate=old), TODAY)
+    verdict, why = review(QUESTIONS, all_yes(gate=old), TODAY,
+                          PEOPLE)
     assert verdict == "not yet"
     assert why == ["gate: partly, evidence is 157 days old"]
 
@@ -76,13 +82,14 @@ def test_three_blockers_in_the_question_list():
 
 
 def test_the_eve_of_inc6_is_not_yet_for_exactly_the_four_gaps():
-    verdict, why = review(QUESTIONS, rd.EVE_OF_INC6, date(2026, 9, 9))
+    verdict, why = review(QUESTIONS, rd.EVE_OF_INC6, date(2026, 9, 9),
+                          PEOPLE)
     assert verdict == "not yet"
     assert why == ["guard: no", "creds: no", "review: no", "kill: no"]
 
 
 def test_today_is_launch_with_three_named_risks():
-    verdict, why = review(QUESTIONS, rd.NOW, TODAY)
+    verdict, why = review(QUESTIONS, rd.NOW, TODAY, PEOPLE)
     assert verdict == "launch with named risks"
     assert [w.split(":")[0] for w in why] == [
         "failover", "creds", "runbooks"]
@@ -94,14 +101,56 @@ def test_closing_the_three_risks_gives_launch():
     fixed["failover"] = Answer("yes", "2026-10-05")
     fixed["creds"] = Answer("yes", "2026-10-05")
     fixed["runbooks"] = Answer("yes", "2026-10-05")
-    assert review(QUESTIONS, fixed, TODAY) == ("launch", [])
+    assert review(QUESTIONS, fixed, TODAY, PEOPLE) == ("launch", [])
 
 
 def test_exercise_two_risks_closed_one_left():
     fixed = dict(rd.NOW)
     fixed["failover"] = Answer("yes", "2026-10-05")
     fixed["creds"] = Answer("yes", "2026-10-05")
-    verdict, why = review(QUESTIONS, fixed, TODAY)
+    verdict, why = review(QUESTIONS, fixed, TODAY, PEOPLE)
     assert verdict == "launch with named risks"
     assert why == ["runbooks: partly; three page alerts reach no sound "
                    "runbook; Priya, 14 days"]
+
+
+def test_a_risk_owner_must_be_one_person_still_here():
+    for who in ("the team", "Jonas", "Zed"):  # group, leaver, stranger
+        gap = Answer("partly", FRESH, "r", who, 14)
+        verdict, why = review(QUESTIONS, all_yes(cost=gap), TODAY,
+                              PEOPLE)
+        assert verdict == "not yet", who
+    away = Answer("partly", FRESH, "r", "Sam", 14)   # on holiday is fine
+    assert review(QUESTIONS, all_yes(cost=away), TODAY,
+                  PEOPLE)[0] == "launch with named risks"
+
+
+def test_a_risk_must_close_within_a_quarter():
+    for days, verdict in ((90, "launch with named risks"),
+                          (91, "not yet"), (3650, "not yet")):
+        gap = Answer("partly", FRESH, "r", "Priya", days)
+        assert review(QUESTIONS, all_yes(cost=gap), TODAY,
+                      PEOPLE)[0] == verdict
+
+
+def test_evidence_dated_after_today_is_no_evidence():
+    future = Answer("yes", "2027-12-31")
+    assert standing(future, TODAY) == ("no",
+                                       "evidence is dated after today")
+    verdict, why = review(QUESTIONS, all_yes(kill=future), TODAY, PEOPLE)
+    assert (verdict, why) == ("not yet", [
+        "kill: no, evidence is dated after today"])
+
+
+def test_an_old_partly_drops_to_no():
+    old = Answer("partly", "2019-01-01", "r", "Priya", 14)
+    status, note = standing(old, TODAY)
+    assert status == "no" and note.startswith("evidence is")
+    assert review(QUESTIONS, all_yes(cost=old), TODAY,
+                  PEOPLE)[0] == "not yet"
+
+
+def test_only_three_statuses_and_a_no_needs_no_date():
+    with pytest.raises(ValueError):
+        standing(Answer("n/a", FRESH), TODAY)
+    assert standing(Answer("no"), TODAY) == ("no", "")

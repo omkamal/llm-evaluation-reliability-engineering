@@ -1,16 +1,17 @@
-"""Service tiers: degrade on purpose, keep irreversible actions off."""
+"""Service tiers: degrade on purpose; below tier 1 the model never writes."""
 from dataclasses import dataclass
 
-from ch10_providers.catalog import eligible, text_only
+from ch10_providers.catalog import available, text_only
 
 READ_ONLY = {"lookup_order", "lookup_policy"}
-# changes the world or contacts someone: cannot be taken back
-IRREVERSIBLE = {"issue_refund", "reschedule_delivery", "reset_password",
-                "escalate_incident"}
-FULL_BELT = READ_ONLY | IRREVERSIBLE | {"create_ticket",
-                                        "escalate_to_human"}
+# writes that can be fixed later (Chapter 0's tier 1)
+FIXABLE = {"create_ticket", "reschedule_delivery", "reset_password"}
+# moves money or pages someone: cannot be taken back
+IRREVERSIBLE = {"issue_refund", "escalate_incident"}
+FULL_BELT = READ_ONLY | FIXABLE | IRREVERSIBLE | {"escalate_to_human"}
 
-# what the MODEL may call on each service tier (1 = full service)
+# what the MODEL may call on each service tier (1 = full service):
+# below tier 1 it writes nothing, fixable or not
 MODEL_TOOLS = {1: FULL_BELT, 2: READ_ONLY, 3: set(), 4: set()}
 
 
@@ -25,12 +26,11 @@ def guard_tool(tool, tier, blocked_log):
         raise ActionBlocked(f"{tool} is not allowed on tier {tier}")
 
 
-def choose_tier(catalog, req, db_up=True):
+def choose_tier(catalog, req, db_up=True, tripped=()):
     """1 full, 2 constrained, 3 cache or retrieval, 4 static guidance."""
-    room = [p for p in catalog if p.free_slots > 0]
-    if eligible(room, req):
+    if available(catalog, req, tripped):      # the router's own test
         return 1
-    if eligible(room, text_only(req)):
+    if available(catalog, text_only(req), tripped):
         return 2                 # residency still applies on every tier
     return 3 if db_up else 4
 

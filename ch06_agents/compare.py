@@ -1,6 +1,6 @@
 """Compare two versions of Relay on the same cases, using the shared
 statistics of Chapter 4 (code/ch04_numbers/stats.py)."""
-from ch04_numbers.stats import paired_bootstrap, proportion_ci
+from ch04_numbers.stats import paired_bootstrap, sign_test_p, wilson_ci
 from ch06_agents.evaluate import passed, run_case
 
 
@@ -25,5 +25,15 @@ def paired_change(a, b, idx, seed=1):
 
 
 def pass_rate(results):
-    p, _, (lo, hi) = proportion_ci(sum(results), len(results))
-    return p, lo, hi
+    """Pass rate with its Wilson interval, Chapter 4's choice for few
+    cases (the Wald formula runs too narrow there)."""
+    lo, hi = wilson_ci(sum(results), len(results))
+    return sum(results) / len(results), lo, hi
+
+
+def sign_p(a, b, idx):
+    """Chapter 4's sign test over the cases in idx that changed. With
+    under about twenty changed cases, trust it over the bootstrap."""
+    better = sum(1 for i in idx if b[i] > a[i])
+    worse = sum(1 for i in idx if b[i] < a[i])
+    return sign_test_p(better, worse)

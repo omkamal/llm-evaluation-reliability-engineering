@@ -48,3 +48,9 @@ def test_every_control_names_a_chapter_that_exists():
         assert all(1 <= ch <= 20 for _, ch in group)
     assert sum(len(g) for g in CONTROLS.values()) == 16
     assert len(LEVELS) == 5
+
+
+def test_governed_covers_chapters_17_to_20():
+    # the Chapter 17 guard is a readiness blocker, so it is on the ladder
+    assert sorted(ch for _, ch in CONTROLS[4]) == [17, 18, 19, 20]
+    assert "guard before every tier 2 tool" in rd.RELAY_HAS

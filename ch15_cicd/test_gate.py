@@ -90,14 +90,31 @@ def test_no_failures_is_not_a_zero_failure_rate():
 
 
 # --- slices ------------------------------------------------------------
-def test_a_thin_slice_is_skipped_not_judged():
+def test_a_thin_slice_is_skipped_and_a_skip_is_never_a_pass():
     main, change = suite.paired_outcomes(9, 4, n=200)
-    small = {i: change[i] for i in list(change)[:10]}
-    for case in small.values():
-        case["slice"] = "tiny"
-    result = decide(main, small, [Rule("tiny", 0.02)], min_cases=20)
-    assert result["rows"][0]["verdict"] == "SKIP"
-    assert "only 10 cases" in result["rows"][0]["note"]
+    for i in list(change)[:10]:
+        change[i]["slice"] = "tiny"
+    rules = [RULE, Rule("tiny", 0.02)]
+    result = decide(main, change, rules, min_cases=20)
+    assert [r["verdict"] for r in result["rows"]] == ["PASS", "SKIP"]
+    assert "only 10 cases" in result["rows"][1]["note"]
+    assert result["verdict"] == "WARN"          # not judged, not passed
+    assert result["because"] == ["tiny"]
+
+
+def test_twenty_cases_that_did_not_move_do_not_pass():
+    same = {f"c{i}": {"slice": "all", "never_fail": False, "trials": [1]}
+            for i in range(20)}
+    row = decide(same, same, [RULE])["rows"][0]
+    assert round(row["lo"], 3) == -0.161     # the bootstrap alone: 0.0
+    assert row["verdict"] == "WARN"
+
+
+def test_the_unseen_floor_leaves_a_well_measured_change_alone():
+    for n in (20, 90, 200):
+        lo, _ = gate.interval([1] * n, [1] * n, resamples=200)[1]
+        assert lo == pytest.approx(-1.96 ** 2 / (n + 1.96 ** 2))
+    assert row_of(9, 4)["rows"][0]["lo"] == pytest.approx(-0.010, abs=5e-4)
 
 
 def test_a_slice_can_block_when_the_overall_rule_only_warns():
@@ -138,6 +155,58 @@ def test_main_must_have_a_score_for_every_case_in_the_run():
         decide(main, change, [RULE])
 
 
+# --- a run that tested nothing is not a clean run -------------------------
+def with_never_fail():
+    """The passing example, with ten cases it gets right made never-fail."""
+    main, change = suite.paired_outcomes(9, 4)
+    for side in (main, change):
+        for i in range(10, 20):
+            side[f"c{i:03d}"]["never_fail"] = True
+    return main, change
+
+
+def test_a_run_with_no_cases_is_incomplete():
+    main, _ = with_never_fail()
+    result = decide(main, {}, [RULE])
+    assert result["verdict"] == "INCOMPLETE"
+    assert "only 0 cases in the run, need 20" in result["because"]
+
+
+def test_a_run_without_main_s_never_fail_cases_is_incomplete():
+    main, change = with_never_fail()
+    for i in (13, 17):
+        del change[f"c{i:03d}"]
+    result = decide(main, change, [RULE])
+    assert result["verdict"] == "INCOMPLETE"
+    assert result["because"] == ["never-fail cases not run: c013, c017"]
+    text = "\n".join(gate.render(result, main, change))
+    assert "### Eval gate: INCOMPLETE" in text
+
+
+def test_errored_trials_are_left_out_not_counted_as_fails():
+    main, change = with_never_fail()
+    change["c100"]["trials"] = [None]          # a timeout, not a fail
+    result = decide(main, change, [RULE])
+    assert result["verdict"] == "PASS"
+    assert "c100" not in result["worse"]
+
+
+def test_too_many_errored_trials_make_the_run_incomplete():
+    main, change = with_never_fail()
+    for i in range(100, 120):
+        change[f"c{i:03d}"]["trials"] = [None]
+    result = decide(main, change, [RULE])
+    assert result["verdict"] == "INCOMPLETE"
+    assert result["because"] == ["20 of 200 trials errored"]
+
+
+def test_a_never_fail_case_whose_trials_all_errored_was_not_run():
+    main, change = with_never_fail()
+    change["c014"]["trials"] = [None]
+    assert decide(main, change, [RULE])["because"] == [
+        "never-fail cases not run: c014"]
+
+
 # --- the command line ---------------------------------------------------
 def write(path, record, cases):
     path.write_text(json.dumps({"record": record, "cases": cases}))
@@ -171,6 +240,27 @@ def test_exit_codes_pass_warn_block(tmp_path, capsys):
     assert run_cli(tmp_path, 7, 10) == 0              # WARN does not fail
     assert "Eval gate: WARN" in capsys.readouterr().out
     assert run_cli(tmp_path, 0, 40) == 1              # a clear regression
+
+
+def test_an_empty_run_fails_the_check(tmp_path, capsys):
+    main, _ = suite.paired_outcomes(9, 4)
+    write(tmp_path / "main.json", record(), main)
+    write(tmp_path / "pr.json", record(), {})
+    code = gate.main(["--baseline", str(tmp_path / "main.json"),
+                      "--results", str(tmp_path / "pr.json"),
+                      "--thresholds", str(thresholds(tmp_path))])
+    assert code == 2
+    assert "Eval gate: INCOMPLETE" in capsys.readouterr().out
+
+
+def test_main_s_own_run_without_its_never_fail_cases_fails(capsys):
+    from ch15_cicd import repo, run_tier
+    base = gate.load(run_tier.BASELINE)
+    rules = [Rule(**r) for r in gate.load(
+        repo.ROOT / "evals/thresholds.json")["rules"]]
+    cut = {i: c for i, c in base["cases"].items() if not c["never_fail"]}
+    assert decide(base["cases"], cut, rules)["verdict"] == "INCOMPLETE"
+    assert decide(base["cases"], {}, rules)["verdict"] == "INCOMPLETE"
 
 
 def test_different_eval_sets_are_not_compared(tmp_path, capsys):

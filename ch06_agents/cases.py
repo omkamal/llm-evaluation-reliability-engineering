@@ -1,11 +1,15 @@
-"""The paired trigger suite. T1 to T6 are three pairs: each write tool has
-a trigger case and a look-alike that must NOT act. `exp` is the expected
+"""The paired trigger suite. T1 to T6 are three pairs: three of the write
+tools each have a trigger case and a look-alike that must NOT act
+(create_ticket appears only as a wrong tool). `exp` is the expected
 end state (None means: nothing may change); `says` is what the reply
-must contain; `path` is the trajectory we expect."""
+must contain, and on a trigger case `must_not` is a denial it must not
+contain (Chapter 3's keyword checks); `path` is the trajectory we
+expect. `email` is the mailbox the simulated customer can read."""
 from ch06_agents.sandbox import NAMES, inc_id, ord_id
 
 TYPES = ["T1", "T2", "T3", "T4", "T5", "T6"]     # T3b is built apart
 WINDOW = "Fri 14:00-16:00"
+DENIAL = r"\b(not|cannot|unable|failed)\b|n't\b"   # "not escalated"
 
 
 def make_case(tid, k=0):
@@ -52,6 +56,7 @@ def make_case(tid, k=0):
             "max_steps": 2}
     return {"id": tid if k == 0 else f"{tid}.{k}", "type": tid, "k": k,
             "message": msg, "session": session, "exp": exp, "says": says,
+            "must_not": DENIAL if exp is not None else None,
             "should_act": exp is not None, "path": path,
             "email": f"{name}@example.test" if tid == "T3b" else None}
 

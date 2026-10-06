@@ -41,7 +41,7 @@ tests:
   - interval: 1m
     input_series:
       - series: 'relay_chats_total{outcome="ok"}'
-        values: '0+100x60 6000x3 6100+100x20'
+        values: '0+100x60 6000x2 6100+100x20'
       - series: 'relay_chats_total{outcome="error"}'
         values: '0x60 100 200 300 300x20'
     alert_rule_test:
@@ -49,17 +49,21 @@ tests:
         alertname: RelayBudgetBurnFast
         exp_alerts: []
 
-  # 20% of chats fail for 30 minutes, then the fault is fixed. The page
-  # is firing at minute 25 and silent again by minute 40, because the
-  # 5 minute window no longer agrees, though the 1 hour ratio is high.
+  # An hour of healthy traffic, then 20% of chats fail for 30 minutes
+  # and the fault is fixed. As in the Python model, the page starts at
+  # fault minute 22 and is silent four minutes after the fix, because
+  # the 5 minute window no longer agrees, though the 1 hour ratio is high.
   - interval: 1m
     input_series:
       - series: 'relay_chats_total{outcome="ok"}'
-        values: '0+80x30 2400+100x30'
+        values: '0+100x60 6080+80x29 8500+100x29'
       - series: 'relay_chats_total{outcome="error"}'
-        values: '0+20x30 600x30'
+        values: '0x60 20+20x29 600x29'
     alert_rule_test:
-      - eval_time: 25m
+      - eval_time: 81m
+        alertname: RelayBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 82m
         alertname: RelayBudgetBurnFast
         exp_alerts:
           - exp_labels:
@@ -67,6 +71,23 @@ tests:
             exp_annotations:
               summary: "Relay is spending its error budget 14.4x too fast"
               runbook: "https://runbooks.example/relay/budget-burn"
-      - eval_time: 40m
+      - eval_time: 94m
         alertname: RelayBudgetBurnFast
+        exp_alerts: []
+
+  # A quiet night: one chat a minute for three hours, then five chats
+  # fail in a row. Without the 100-chat floor this pages (burn 16x over
+  # the hour); with it, nothing pages on 60 chats an hour.
+  - interval: 1m
+    input_series:
+      - series: 'relay_chats_total{outcome="ok"}'
+        values: '0+1x180 180x7'
+      - series: 'relay_chats_total{outcome="error"}'
+        values: '0x180 1+1x4 5x2'
+    alert_rule_test:
+      - eval_time: 187m
+        alertname: RelayBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 187m
+        alertname: RelayBudgetBurnMedium
         exp_alerts: []

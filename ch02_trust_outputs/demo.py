@@ -2,9 +2,10 @@
 from pydantic import ValidationError
 
 from ch02_trust_outputs.gateway import Gateway
-from ch02_trust_outputs.idem import KeyReused, Payments, RefundService, make_key
+from ch02_trust_outputs.idem import (KeyReused, Payments, RefundService, ReplyLost,
+                                     make_key, new_request_id)
 from ch02_trust_outputs.metrics import Day
-from ch02_trust_outputs.refund import RefundArgs, needs_approval, validate_refund_args
+from ch02_trust_outputs.refund import Order, RefundArgs, needs_approval, validate_refund_args
 from ch02_trust_outputs.repair import MAX_ATTEMPTS, Failure, Reply, get_ticket
 from ch02_trust_outputs.schema import BLACK_FRIDAY, GOOD_TICKET, Ticket
 from ch02_trust_outputs.triage import classify, schema_suspects
@@ -25,7 +26,7 @@ def main():
         Ticket.model_validate_json(BLACK_FRIDAY)
     except ValidationError as e:
         for err in e.errors():
-            print(err["loc"], err["msg"])
+            print(f"{err['type']}: {err['msg']}")
 
     print("== the gateway quarantines instead of dropping")
     gw = Gateway()
@@ -65,7 +66,7 @@ def main():
     print(schema_suspects(gw3.quarantine))
 
     print("== four numbers")
-    for name, day in (("normal day", Day(970, 20, 4, 6)), ("after prompt v13", Day(810, 120, 20, 50))):
+    for name, day in (("normal day", Day(986, 9, 2, 3)), ("after prompt v13", Day(810, 138, 2, 50))):
         print(name + ": " + ", ".join(f"{k} {v:.1%}" for k, v in day.numbers().items()))
 
     print("== four layers of argument checks")
@@ -96,6 +97,26 @@ def main():
         svc.issue_refund(other, key)
     except KeyReused:
         print(f"same key, other amount: refused, payments still {len(pay.calls)}")
+    lost = ReplyLost()                        # pays, then the answer is lost
+    svc = RefundService(lost)
+    key = make_key("conv-77", args.order_id, new_request_id())
+    try:
+        svc.issue_refund(args, key)
+    except TimeoutError:
+        again = svc.issue_refund(args, key)  # the retry asks, it does not pay
+    print(f"reply lost, then a retry: payments ran {len(lost.calls)} time")
+    pay = Payments()
+    svc = RefundService(pay, orders={"ORD-004829": Order("cust-17", 4_999)})
+    chats = [svc.issue_refund(args, make_key(conv, args.order_id, new_request_id()),
+                              "cust-17") for conv in ("conv-77", "conv-81")]
+    print(f"two chats refund the whole order: paid {len(pay.calls)}, "
+          f"then {chats[1].code}")
+    pay = Payments()
+    svc = RefundService(pay, orders={"ORD-004830": Order("cust-22", 12_000)})
+    forty = RefundArgs(order_id="ORD-004830", amount_cents=4_000, reason="late")
+    out = [svc.issue_refund(forty, make_key("conv-90", forty.order_id, new_request_id()),
+                            "cust-22") for _ in range(3)]
+    print(f"three $40 refunds in a day: paid {len(pay.calls)}, then {out[2].code}")
 
 
 if __name__ == "__main__":

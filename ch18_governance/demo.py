@@ -7,13 +7,13 @@ from ch04_numbers.stats import wilson_ci
 from ch06_agents.sandbox import call_tool, new_state, ord_id
 from ch11_traces.tracer import IdGenerator
 from common.clock import FakeClock
-from ch18_governance.audit import AuditLog
+from ch18_governance.audit import AuditLog, Sealer
 from ch18_governance.broker import (GRANTS, Broker, NeedsApproval,
                                     NotGranted, Refused)
 from ch18_governance.compliance import (CONTROLS, criteria_evidenced,
                                         gaps, personal_data_found,
                                         retention_findings)
-from ch18_governance.door import Door, Payments
+from ch18_governance.door import Door, Payments, Refunds
 from ch18_governance.inventory import (Change, Item, apply_change,
                                        audit_inventory)
 from ch18_governance.measure import loop_metrics
@@ -26,12 +26,23 @@ from ch18_governance.rubber_stamp import flags, simulate, window_report
 
 TODAY = date(2026, 10, 5)
 IDS = IdGenerator(18)
+KEY = b"demo only: in production a key service holds it"
+
+
+def money_door(clock, orders):
+    """A broker, a sealed log, a bank, and the door in front of it."""
+    broker, pay = Broker(clock), Payments()
+    log = AuditLog(clock, Sealer(KEY))
+    refunds = Refunds(pay, orders, today=lambda: TODAY)
+    return broker, log, pay, Door(broker, log, {"issue_refund": refunds})
 
 
 def broker_demo():
     print("== the broker: who may hold what")
     clock = FakeClock()
-    broker = Broker(clock)
+    orders = {"ORD-004830": Order("cust-31", 52_000),
+              "ORD-007777": Order("cust-44", 9_900)}
+    broker, _, _, door = money_door(clock, orders)
     for agent, tools in GRANTS.items():
         shown = ", ".join(sorted(tools)) if len(tools) < 3 else \
             f"{len(tools)} tools, refunds capped at 5000 cents"
@@ -42,24 +53,44 @@ def broker_demo():
         print("researcher asks for a refund key:", err)
     try:
         broker.issue("actioner", "issue_refund", "task-9", "cust-31",
-                     max_cents=40_000)
+                     max_cents=40_000, approver="human")
     except NeedsApproval as err:
-        print("actioner asks for $400:", err)
+        print('$400 with approver="human":', err)
     token = broker.issue("actioner", "issue_refund", "task-9", "cust-31")
     print(f"{token.id}: {token.tool}, {token.customer}, "
           f"up to {token.max_cents} cents, {broker.ttl} s")
-    tries = [("a $400 refund", "cust-31", 40_000),
-             ("another customer's order", "cust-44", 2_000)]
-    for what, customer, cents in tries:
-        try:
-            broker.check(token, "issue_refund", customer, cents)
-        except Refused as refusal:
-            print(f"{what}: refused ({refusal.code})")
+    tries = [("a $400 refund", "ORD-004830", 40_000, "cust-31"),
+             ("a call from another customer's session", "ORD-004830",
+              2_000, "cust-44"),
+             ("$49 on a stranger's order", "ORD-007777", 4_900,
+              "cust-31")]
+    for what, order, cents, session in tries:
+        refuse(door, token, what, order, cents, session)
+    seen = []
+    for n in range(3):                 # one key each, one customer, one day
+        key = broker.issue("actioner", "issue_refund", f"task-{n}",
+                           "cust-31")
+        seen.append(refuse(door, key, None, "ORD-004830", 4_000,
+                           "cust-31"))
+    print("three $40 refunds in one day:", ", ".join(seen))
+    key = broker.issue("actioner", "issue_refund", "task-5", "cust-31")
     clock.sleep(1_200)
+    refuse(door, key, "an unused key 20 minutes later", "ORD-004830",
+           2_000, "cust-31")
+
+
+def refuse(door, token, what, order, cents, session):
+    """Try one refund through the door and say what happened to it."""
     try:
-        broker.check(token, "issue_refund", "cust-31", 2_000)
+        door.call(token, "issue_refund",
+                  {"order_id": order, "amount_cents": cents}, session,
+                  "trace-demo")
+        result = "paid"
     except Refused as refusal:
-        print(f"the same key 20 minutes later: refused ({refusal.code})")
+        result = f"refused ({refusal.code})"
+    if what:
+        print(f"{what}: {result}")
+    return result
 
 
 def audit_demo():
@@ -69,8 +100,9 @@ def audit_demo():
               window="Thu 10:00-12:00")
     print("Chapter 6 kept:", state["audit_log"][0])
     clock = FakeClock()
-    broker, log, pay = Broker(clock), AuditLog(clock), Payments()
-    door = Door(broker, log, {"issue_refund": pay.issue_refund})
+    orders = {f"ORD-0048{30 + k}": Order("cust-31", 9_000)
+              for k in range(4)}
+    broker, log, pay, door = money_door(clock, orders)
     trace = IDS.trace_id()
     for k in range(4):
         order = f"ORD-0048{30 + k}"
@@ -83,14 +115,31 @@ def audit_demo():
     pay.issue_refund("ORD-004899", 2_500)      # a hotfix script, no door
     for e in log.events[:2]:
         print(f"{e['seq']} {e['agent']} {e['decision']} "
-              f"trace={e['trace'][:8]} prev={e['prev']} hash={e['hash']}")
+              f"trace={e['trace'][:8]} prev={e['prev'][:8]} "
+              f"hash={e['hash'][:8]}")
     print("chain intact:", log.verify() is None)
-    log.events[1]["args"]["amount_cents"] = 100
-    print("after editing record 1, the chain breaks at record",
+    kept = [dict(e) for e in log.events]
+    log.events[1]["args"] = dict(log.events[1]["args"], amount_cents=100)
+    forge_from(log.events, 1)
+    print("edit record 1, recompute every later hash: breaks at record",
           log.verify())
+    log.events = kept[:-1]
+    print(f"drop the newest record: record {log.verify()} is missing")
+    log.events = kept
     covered = round(log.coverage(pay.ledger) * len(pay.ledger))
     print(f"actions with a record: {covered} of {len(pay.ledger)} "
           f"({covered / len(pay.ledger):.0%})")
+
+
+def forge_from(events, start):
+    """What a careful editor without the key does: re-seal every record
+    from `start` on, with a key of their own, so the links still match."""
+    rogue = Sealer(b"the editor's own key")
+    rogue.head = (start, events[start - 1]["hash"] if start else "0" * 64)
+    for i in range(start, len(events)):
+        body = {k: v for k, v in events[i].items()
+                if k not in ("seq", "prev", "hash")}
+        events[i] = rogue.seal(body)
 
 
 def inventory_demo():
@@ -164,7 +213,10 @@ def loss_demo():
     lo, hi = wilson_ci(4, 200)
     print(f"4 errors in 200 reviewed: {4 / 200:.1%}, "
           f"interval {lo:.1%} to {hi:.1%}")
+    hi = round(hi, 3)                  # the rate as printed: 5.0%
     print(f"break-even at {hi:.1%}: ${break_even_cents(hi) / 100:.2f}")
+    print("a reviewer who catches 90%: break-even at 2% is "
+          f"${break_even_cents(0.02, catch_rate=0.9) / 100:.2f}")
 
 
 def case(case_id, cents, **kw):
@@ -192,8 +244,7 @@ def routing_demo():
 
 def desk_parts(orders):
     clock = FakeClock()
-    broker, log, pay = Broker(clock), AuditLog(clock), Payments()
-    door = Door(broker, log, {"issue_refund": pay.issue_refund})
+    broker, log, pay, door = money_door(clock, orders)
     return clock, log, pay, ReviewDesk(clock, broker, door, log, orders)
 
 
@@ -237,7 +288,7 @@ def review_demo():
 
 
 def week_demo():
-    print("== the loop in numbers (simulated week)")
+    print("== the loop in numbers (a simulated sample)")
     rng = random.Random(18)
     orders = {}
     clock, log, pay, desk = desk_parts(orders)
@@ -267,7 +318,7 @@ def week_demo():
         desk.decide(items[i], "reviewer-7", verdict,
                     edited_cents=max(500, cents // 10))
     metrics = loop_metrics(desk.outcomes, tasks=2_500, sla=900)
-    print(f"escalation rate {metrics['escalation rate']:.1%}, "
+    print(f"hand-off rate {metrics['hand-off rate']:.1%}, "
           f"override rate {metrics['override rate']:.1%}")
     print(f"queue p50 {metrics['queue p50 s'] / 60:.1f} min, "
           f"p95 {metrics['queue p95 s'] / 60:.1f} min, "

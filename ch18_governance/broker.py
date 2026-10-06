@@ -19,6 +19,9 @@ GRANTS = {
 }
 CAPS_CENTS = {"issue_refund": AUTO_LIMIT_CENTS}   # above this: a person
 TTL_SECONDS = 900          # fifteen minutes: one task, not one day
+# People who hold the reviewer role. In production: a signed approval
+# from the review service, bound to the case, customer and amount.
+REVIEWERS = {"reviewer-7", "reviewer-12"}
 
 
 class NotGranted(Exception):
@@ -48,9 +51,11 @@ class Token:
 
 
 class Broker:
-    def __init__(self, clock, grants=GRANTS, ttl=TTL_SECONDS):
+    def __init__(self, clock, grants=GRANTS, ttl=TTL_SECONDS,
+                 reviewers=REVIEWERS):
         self.clock, self.grants, self.ttl = clock, grants, ttl
-        self.live = {}                       # token id -> uses left
+        self.reviewers = reviewers
+        self.live = {}               # token id -> [token as issued, uses]
         self.numbers = itertools.count(1)
 
     def issue(self, agent, tool, task, customer, max_cents=None,
@@ -60,28 +65,32 @@ class Broker:
         cap = CAPS_CENTS.get(tool)
         if cap is not None:
             max_cents = cap if max_cents is None else max_cents
-            # only a person can lift the cap, and agents are not people
-            if max_cents > cap and (approver is None
-                                    or approver in self.grants):
+            # only a known reviewer lifts the cap: not an agent, not a
+            # string such as "human" or "manager"
+            if max_cents > cap and approver not in self.reviewers:
                 raise NeedsApproval(f"{max_cents} cents needs a person")
         token = Token(f"tok-{next(self.numbers):04d}", agent, task, tool,
                       customer, max_cents,
                       self.clock.now() + self.ttl, approver)
-        self.live[token.id] = uses
+        self.live[token.id] = [token, uses]
         return token
 
     def check(self, token, tool, customer, amount_cents=0):
         """Raise Refused, with a code, unless this call is in scope."""
-        if self.live.get(token.id, 0) < 1:
-            raise Refused("unknown_or_used")
+        issued, uses = self.live.get(token.id, (None, 0))
+        if issued != token or uses < 1:      # a copy with a wider scope
+            raise Refused("unknown_or_used")  # is not the token issued
         if self.clock.now() >= token.expires_at:
             raise Refused("expired")
         if tool != token.tool:
             raise Refused("wrong_tool")
         if customer != token.customer:       # taken from the session
             raise Refused("wrong_customer")
-        if token.max_cents is not None and amount_cents > token.max_cents:
-            raise Refused("over_cap")
+        if token.max_cents is not None:
+            if amount_cents <= 0:
+                raise Refused("bad_amount")
+            if amount_cents > token.max_cents:
+                raise Refused("over_cap")
 
     def spend(self, token):
-        self.live[token.id] -= 1
+        self.live[token.id][1] -= 1

@@ -40,6 +40,8 @@ def good_change(**kw):
 
 @pytest.mark.parametrize("edit, message", [
     ({"approver": "sam"}, "someone else"),
+    ({"approver": "Sam "}, "someone else"),
+    ({"approver": ""}, "someone else"),
     ({"eval_run": ""}, "eval run"),
     ({"why": " "}, "reason"),
     ({"name": "nobody"}, "not listed"),

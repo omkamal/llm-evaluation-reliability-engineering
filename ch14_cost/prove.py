@@ -1,7 +1,7 @@
 """Prove a saving without losing quality: a paired comparison.
 
 Both policies run on the SAME cases (Chapter 4), so each case keeps
-its two outcomes together and the interval is as narrow as it can be.
+its two outcomes together and the interval is narrower.
 """
 from dataclasses import dataclass
 

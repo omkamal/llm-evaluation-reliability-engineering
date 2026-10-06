@@ -43,6 +43,8 @@ class Hit:
 class BM25Index:
     def __init__(self, chunks, k1=1.2, b=0.75):
         self.chunks, self.k1, self.b = list(chunks), k1, b
+        if not self.chunks:
+            raise ValueError("an index needs at least one chunk")
         self.tf = [Counter(tokens(c.text)) for c in self.chunks]
         self.length = [sum(tf.values()) for tf in self.tf]
         self.avg = sum(self.length) / len(self.length)
@@ -62,11 +64,18 @@ class BM25Index:
                     tf[w] + self.k1 * norm)
         return total
 
-    def search(self, query, k=5, min_score=0.0):
-        """The k best chunks scoring above `min_score` (maybe none)."""
+    def search(self, query, k=5, min_score=0.0, allowed=None):
+        """The k best chunks scoring above `min_score` (maybe none).
+
+        `allowed` is the set of document ids the asking user may read
+        (None: all). It filters before ranking, so the k slots go to
+        readable chunks; filtering the k results afterwards would leave
+        fewer than k, or none.
+        """
         terms = set(tokens(query))
         scored = [(self.score(terms, i), i)
-                  for i in range(len(self.chunks))]
+                  for i, c in enumerate(self.chunks)
+                  if allowed is None or c.doc_id in allowed]
         scored = [(s, i) for s, i in scored if s > min_score]
         scored.sort(key=lambda si: (-si[0], si[1]))   # ties: doc order
         return [Hit(self.chunks[i], s) for s, i in scored[:k]]

@@ -1,13 +1,18 @@
 """Chapter 12 as tests.   pytest -q ch12_slos"""
+import random
+
+import pytest
+
 from common.clock import FakeClock
 from ch12_slos import demo
 from ch12_slos.budget import (budget_left, burn_rate, days_to_empty,
                               error_budget, policy_rung, share_spent)
-from ch12_slos.burn import (RULES, Rule, Series, alert_decision,
-                            long_window_only, minutes_to_alert,
-                            minutes_to_clear)
+from ch12_slos.burn import (MIN_CHATS, RULES, Rule, Series,
+                            alert_decision, long_window_only,
+                            minutes_to_alert, minutes_to_clear)
 from ch12_slos.health import Dependency, deep, shallow
-from ch12_slos.quality import (cost_per_success, judge_reading,
+from ch12_slos.quality import (cost_per_success, daily_reads,
+                               judge_corrected, judge_reading,
                                judge_verdict, refusal_rate)
 from ch12_slos.report import Spend, render_report
 from ch12_slos.sheet import SHEET, check_sheet, line
@@ -19,8 +24,8 @@ from ch12_slos.tasks import (Task, cost_per_resolved, per_task, percentile,
 
 def test_the_two_budgets_in_the_chapter():
     assert error_budget(0.995, 1_000_000) == 5_000      # chat layer
-    assert error_budget(0.99, 900_000) == 9_000         # task layer, 30 d
-    assert error_budget(0.99, 840_000) == 8_400         # same, 28 d
+    assert error_budget(0.99, 840_000) == 8_400         # task layer, 28 d
+    assert error_budget(0.99, 30_000 * 28) == 8_400     # 30,000 a day
 
 
 def test_burn_rate_arithmetic():
@@ -30,6 +35,15 @@ def test_burn_rate_arithmetic():
     assert round(share_spent(burn, 1), 3) == 0.021
     assert days_to_empty(1.0) == 28
     assert burn_rate(0, 0, 0.995) == 0.0
+
+
+def test_a_100_percent_slo_is_refused_not_divided_by_zero():
+    with pytest.raises(ValueError):
+        burn_rate(1, 100, 1.0)
+    with pytest.raises(ValueError):
+        budget_left(1.0, 1_000_000, 0)
+    with pytest.raises(ValueError):
+        alert_decision(demo.spike_series(5), slo=1.0)
 
 
 def test_each_tier_spends_a_known_share_of_the_28_day_budget():
@@ -103,8 +117,71 @@ def test_time_to_first_alert_by_failure_rate():
 
 
 def test_a_slow_leak_that_is_on_pace_never_alerts():
-    minute, decision = minutes_to_alert(0.004)          # burn 0.8
+    # 0.4% of 1,000 chats is four real failures a minute, for four days
+    minute, decision = minutes_to_alert(0.004, per_minute=1000)
     assert minute is None and decision.action == "ok"
+    # a just-faster leak does alert, so the run above is not vacuous
+    assert minutes_to_alert(0.006, per_minute=1000)[1].action == "ticket"
+
+
+def test_a_rate_that_rounds_to_zero_failures_is_refused():
+    with pytest.raises(ValueError):
+        minutes_to_alert(0.004, per_minute=100)         # 0.4 of a chat
+    with pytest.raises(ValueError):
+        minutes_to_clear(RULES, failure_rate=0.004)
+
+
+def test_history_has_the_same_volume_as_the_failing_traffic():
+    # before the fix, history stayed at 100 a minute: a ticket at 618
+    assert minutes_to_alert(0.008, per_minute=1000)[0] == 2701
+    assert minutes_to_alert(0.08, per_minute=1000)[0] == 55
+    assert minutes_to_alert(0.08, per_minute=100)[0] == 55
+
+
+def test_minutes_to_clear_stops_when_nothing_fires():
+    assert minutes_to_clear(RULES, failure_rate=0.05) == (None, None)
+
+
+# ---- few chats: the floor ------------------------------------------
+
+def test_the_floor_is_the_100_chats_chapter_16_relies_on():
+    assert MIN_CHATS == 100
+
+
+def test_one_failure_on_a_quiet_night_pages_only_without_a_floor():
+    clock, series = demo.quiet_night()                  # 12 chats an hour
+    clock.sleep(300)
+    series.record(1, 1)                                 # one chat fails
+    bare = alert_decision(series, min_chats=0)
+    assert bare.action == "page" and bare.long_burn == 16.666667
+    assert alert_decision(series).action == "ok"
+
+
+def test_five_failures_at_one_chat_a_minute_page_only_without_a_floor():
+    clock, series = demo.quiet_night(gap_s=60)
+    for _ in range(5):
+        clock.sleep(60)
+        series.record(1, 1)
+    assert alert_decision(series, min_chats=0).action == "page"
+    assert alert_decision(series).action == "ok"        # 60 chats an hour
+
+
+def test_a_real_outage_on_a_quiet_night_still_alerts():
+    minutes, decision = demo.outage_alert_minutes()     # 12 an hour
+    assert (minutes, decision.action) == (25, "ticket")
+    minutes, decision = demo.outage_alert_minutes(60)   # 60 an hour
+    assert (minutes, decision.action) == (11, "page")
+    assert decision.rule.burn == 6.0
+
+
+def test_the_floor_counts_the_long_window_and_lets_100_through():
+    clock = FakeClock()
+    series = Series(clock)
+    for _ in range(100):                                # 100 chats in 1 h
+        clock.sleep(36)
+        series.record(1, 1)
+    assert series.window(3600)[1] == 100
+    assert alert_decision(series).action == "page"
 
 
 def test_a_short_outage_does_not_page_but_a_short_window_alone_would():
@@ -172,6 +249,54 @@ def test_judge_verdicts_use_the_interval_not_the_point():
     assert rate < 0.90 and lo < 0.90 < hi and verdict == "unclear"
     assert judge_verdict(4400, 5000, 0.90)[2] == "missed"
     assert round(judge_verdict(4550, 5000, 0.90)[1][0], 3) == 0.902
+    assert round(judge_verdict(4480, 5000, 0.90)[1][0], 3) == 0.887
+
+
+def test_the_correction_undoes_the_judge():
+    for tpr, tnr in ((0.97, 0.25), (0.91, 0.94), (0.92, 0.90)):
+        reading = judge_reading(0.86, tpr, tnr)
+        assert round(judge_corrected(reading, tpr, tnr), 9) == 0.86
+    assert round(judge_corrected(0.791, 0.91, 0.94), 3) == 0.86
+    # uncorrected, a 90% reading needs 98.8% true quality from this judge
+    assert round(judge_corrected(0.90, 0.91, 0.94), 3) == 0.988
+    with pytest.raises(ValueError):
+        judge_corrected(0.5, 0.5, 0.5)                  # a coin
+    assert judge_corrected(0.99, 0.91, 0.94) == 1.0     # clipped
+
+
+def test_a_corrected_verdict_widens_the_interval():
+    raw = judge_verdict(4168, 5000, 0.90)[1]
+    fixed = judge_verdict(4168, 5000, 0.90, tpr=0.91, tnr=0.94)
+    width = (fixed[1][1] - fixed[1][0]) / (raw[1] - raw[0])
+    assert round(width, 3) == round(1 / 0.85, 3)
+    assert round(fixed[0], 3) == 0.910                  # reads 83.4%
+
+
+def ticket_hours(seed, true_good=0.91, per_hour=30, slo=0.90):
+    """A month of a 2% judged sample, read by the burn-rate rules."""
+    rng, clock = random.Random(seed), FakeClock()
+    series, hours = Series(clock), 0
+    for hour in range(72 + 672):                    # 3 days of history
+        clock.sleep(3600)
+        bad = sum(rng.random() > true_good for _ in range(per_hour))
+        series.record(bad, per_hour)
+        if hour >= 72 and alert_decision(series, slo=slo).action != "ok":
+            hours += 1
+    return hours
+
+
+def test_burn_rate_on_a_judged_sample_mostly_measures_luck():
+    # true quality 91% meets the 90% line, yet most months open tickets
+    months = [ticket_hours(seed) for seed in range(20)]
+    assert sum(h > 0 for h in months) == 17
+
+
+def test_inc4_replayed_through_the_weekly_verdict():
+    reads = daily_reads(demo.inc4_good_rates(), 714, 0.90)
+    assert reads[:2] == ["met", "met"]                  # before, day 1
+    assert reads.index("unclear") == 2
+    assert reads.index("missed") == 7                   # Priya: day 9
+    assert reads[7:] == ["missed"] * 3
 
 
 def test_a_judge_reading_is_only_as_true_as_its_tnr():
@@ -248,6 +373,6 @@ def test_more_unplanned_spend_moves_the_policy_line():
 def test_the_demo_runs_and_prints_the_headline_numbers(capsys):
     demo.main()
     out = capsys.readouterr().out
-    assert "burn 14.4x" in out and "budget lasts 1.94 days" in out
+    assert "burn 14.4x" in out and "error budget lasts 1.94 days" in out
     assert "after 55 minutes: page" in out
     assert "Promises kept: 9 of 10" in out

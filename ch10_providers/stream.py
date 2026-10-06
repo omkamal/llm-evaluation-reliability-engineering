@@ -17,13 +17,13 @@ class StreamResult:
     tool_call: dict = None          # only from a complete stream
     partial_tool: str = ""          # a draft, never an instruction
     stop: str = None
-    why: str = ""                   # cut | stalled | error
+    why: str = ""                   # cut | stalled | error | length
 
 
 async def next_event(events, clock, idle):
     """The next event, unless the stream goes quiet for `idle` seconds."""
-    nxt = asyncio.ensure_future(events.__anext__())
-    timer = asyncio.ensure_future(clock.sleep(idle))
+    nxt = asyncio.create_task(events.__anext__())
+    timer = asyncio.create_task(clock.sleep(idle))
     try:
         await asyncio.wait({nxt, timer},
                            return_when=asyncio.FIRST_COMPLETED)
@@ -36,6 +36,15 @@ async def next_event(events, clock, idle):
         await asyncio.gather(nxt, timer, return_exceptions=True)
 
 
+def release(text, show, res):
+    """Show held text if it ends a sentence; return what is still held."""
+    if text.endswith((".", "?", "!")):
+        show(text)
+        res.shown.append(text)
+        return ""
+    return text
+
+
 async def consume(events, show, clock=None, idle=10.0):
     clock = clock or RealClock()
     res, text, tool = StreamResult("incomplete"), "", ""
@@ -43,12 +52,11 @@ async def consume(events, show, clock=None, idle=10.0):
         while True:
             kind, value = await next_event(events, clock, idle)
             if kind == "text":
+                if value[:1].isspace():   # "$15." + "00" is no full stop
+                    text = release(text, show, res)
                 text += value
-                if text.endswith((".", "?", "!")):    # a safe boundary
-                    show(text)
-                    res.shown.append(text)
-                    text = ""
             elif kind == "tool_delta":
+                text = release(text, show, res)   # the text is over
                 tool += value                     # hold it, never run it
             elif kind == "stop":
                 res.stop = value
@@ -56,17 +64,16 @@ async def consume(events, show, clock=None, idle=10.0):
             else:                                     # an error event
                 res.why = "error"
                 break
-    except StopAsyncIteration:
-        res.why = "cut"           # ended with no stop event
-    except ConnectionError:
-        res.why = "cut"
+    except (StopAsyncIteration, ConnectionError):
+        res.why = "cut"               # dropped, or ended with no stop
     except StreamStalled:
         res.why = "stalled"
     finally:
         await events.aclose()     # close the provider connection
     res.partial_tool = tool
-    if res.stop is None:
-        return res                    # a draft is not an answer
+    if res.stop not in ("end", "tool"):   # cut, or a token limit
+        res.why = res.why or res.stop
+        return res                        # a draft is not an answer
     if text:                          # the last words are safe now
         show(text)
         res.shown.append(text)
@@ -87,7 +94,7 @@ def lenient(partial):
 def recovery(result, *, effect_done=False, outcome_unknown=False):
     """After a bad ending, never re-run a step whose effect may exist."""
     if outcome_unknown:
-        return "check", "ask by its key; never call again"
+        return "replay", "same call and key; no new decision"
     if effect_done:
         return "confirm", "tell the customer from the record"
     if result.partial_tool:

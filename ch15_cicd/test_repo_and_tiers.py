@@ -1,5 +1,6 @@
 """Prompts as code, the path filter, the tiers and the workflow file."""
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from ch15_cicd.tiers import (SAFETY_TRIALS, TIERS, TRIGGER_PATHS,
                              needs_evals, pick_sample)
 
 WORKFLOW = Path(__file__).parent / "workflows" / "evals.yml"
+GITHUB = Path(__file__).parent.parent / ".github" / "workflows"
 
 
 # --- the repository ----------------------------------------------------
@@ -73,6 +75,10 @@ def test_tool_versions_and_schema_hash():
     ("ch15_cicd/relay/schemas/reset_password.json", True),
     ("ch15_cicd/relay/evals/thresholds.json", True),
     ("ch15_cicd/relay/PROMPT_CHANGE.md", False),
+    ("ch15_cicd/gate.py", True),                  # the judge of the PR
+    ("requirements-dev.txt", True),
+    (".github/workflows/evals.yml", True),
+    (".github/workflows/tests.yml", False),
 ])
 def test_only_files_that_change_behaviour_trigger_evals(path, expected):
     assert needs_evals([path]) is expected
@@ -129,7 +135,7 @@ def test_the_workflow_parses_and_has_the_three_triggers():
     on = flow.get("on", flow.get(True))        # YAML reads `on` as True
     assert set(on) == {"pull_request", "schedule", "push",
                        "workflow_dispatch"}
-    assert on["schedule"] == [{"cron": "0 3 * * *"}]
+    assert on["schedule"] == [{"cron": "17 3 * * *"}]   # off the hour
     assert on["push"]["tags"] == ["v*"]
 
 
@@ -142,7 +148,7 @@ def test_the_workflow_path_filter_matches_the_python_one():
 def test_the_workflow_runs_each_tier_with_the_right_flags():
     text = WORKFLOW.read_text()
     assert "run_tier --sample 50" in text
-    assert "run_tier --trials 3" in text
+    assert "run_tier --trials 3 --check-baseline" in text
     assert "run_tier --trials 5 --safety" in text
     assert "ch15_cicd.guard" in text and "ch15_cicd.gate" in text
 
@@ -153,21 +159,59 @@ def test_the_workflow_keeps_the_report_even_when_the_gate_blocks():
     assert gate_step["shell"] == "bash"          # bash runs with pipefail
     assert "tee results/report.md" in gate_step["run"]
     after = steps[steps.index(gate_step) + 1:]
-    assert after and all("always()" in s["if"] for s in after)
+    # !cancelled(), not always(): a stale run that was cancelled must
+    # not overwrite the newer run's comment.
+    assert after and all("!cancelled()" in s["if"] for s in after)
+    assert "always()" not in WORKFLOW.read_text()
 
 
 def test_the_workflow_has_least_privilege_and_a_time_limit():
     flow = load_workflow()
     assert flow["permissions"] == {"contents": "read",
                                    "pull-requests": "write"}
-    assert flow["jobs"]["evals"]["timeout-minutes"] == 15
+    limit = flow["jobs"]["evals"]["timeout-minutes"]
+    assert "'pull_request' && 15 || 120" in limit    # smoke, or the rest
     assert flow["concurrency"]["cancel-in-progress"] is True
+    assert "github.event_name" in flow["concurrency"]["group"]
 
 
 def test_the_comment_step_skips_pull_requests_from_forks():
     steps = load_workflow()["jobs"]["evals"]["steps"]
     step = next(s for s in steps if "Comment" in s.get("name", ""))
     assert "head.repo.full_name == github.repository" in step["if"]
+
+
+SHA = re.compile(r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
+
+
+def workflows():
+    found = [WORKFLOW] + sorted(GITHUB.glob("*.yml"))
+    return [p for p in found if p.exists()]
+
+
+def test_runners_and_actions_are_pinned():
+    yaml = pytest.importorskip("yaml")
+    for path in workflows():
+        for job in yaml.safe_load(path.read_text())["jobs"].values():
+            assert job["runs-on"] == "ubuntu-24.04", path
+            for step in job["steps"]:
+                if "uses" in step:
+                    assert SHA.match(step["uses"]), (path, step["uses"])
+
+
+def test_the_workflow_github_runs_is_the_one_in_the_chapter():
+    live = GITHUB / "evals.yml"
+    if not live.exists():
+        pytest.skip("no .github folder in this copy")
+    assert live.read_text() == WORKFLOW.read_text()
+
+
+def test_packages_are_pinned_to_exact_versions():
+    root = Path(__file__).parent.parent
+    for name in ("requirements.txt", "requirements-dev.txt"):
+        for line in (root / name).read_text().splitlines():
+            if line and not line.startswith("-r"):
+                assert re.fullmatch(r"[\w-]+==[\d.]+", line), line
 
 
 def test_thresholds_file_matches_the_chapter():

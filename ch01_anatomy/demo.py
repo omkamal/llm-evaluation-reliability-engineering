@@ -21,12 +21,12 @@ def main():
 
     print("== sampling")
     options, logits = ["refund", "return", "replace"], [2.0, 1.6, 0.4]
-    rng = random.Random(2)
+    rng = random.Random(11)
     for t in (0, 1.0):
         print(f"temperature {t}:", [sample(options, logits, t, rng) for _ in range(6)])
 
     print("== the window overflows")
-    turns = ["You are Relay, ParcelPath's support assistant.",
+    turns = ["You are Relay, Crateway's support assistant.",
              "My address is 14 Elm Street, Apt 3.",
              "I ordered a lamp last week.",
              "It has not arrived and I need it by Friday.",

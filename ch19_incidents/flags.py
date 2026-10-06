@@ -2,14 +2,14 @@
 plus two dials (approval, service tier). The flag service is a dict.
 
 Every read names a safe default, so a flag store that cannot answer
-leaves Relay in the last known, tested state."""
+fails SAFE: the kill switch on, never silently off."""
 from collections import namedtuple
 
 from ch10_providers.tiers import MODEL_TOOLS
 from common.clock import SystemClock
 
-# One bundle = prompt, model and tools released together. Illustrative
-# versions; Chapter 16 builds the release bundle properly.
+# One bundle = prompt, model and tools released together, named here by
+# release date. Illustrative; Chapter 16 builds the release bundle.
 BUNDLES = {
     "2026.09.17": {"prompt": "planner@v42", "model": "a-large-v2",
                    "tools": "v14"},
@@ -18,11 +18,18 @@ BUNDLES = {
     "2026.08.25": {"prompt": "planner@v41", "model": "a-large-v2",
                    "tools": "v12"},
 }
+# In production LAST_GOOD comes from the release record (Chapter 16) at
+# every release; a constant in code goes stale.
 CURRENT, LAST_GOOD = "2026.09.08", "2026.08.25"
 
-# What each flag returns when the flag service cannot answer.
-SAFE = {"kill_switch": False, "bundle": LAST_GOOD,
-        "disabled_tools": (), "approval_for": (), "max_tier": 1}
+# What a flag reads as when the service cannot answer and the flag was
+# never read: the safe side. A cold start hands every chat to a person.
+SAFE = {"kill_switch": True, "bundle": LAST_GOOD,
+        "disabled_tools": (), "approval_for": (), "max_tier": 2}
+
+# A normal day in the flag service: every flag set on purpose, because
+# a missing flag reads as its safe default.
+NORMAL = {"kill_switch": False, "bundle": CURRENT, "max_tier": 1}
 
 AgentConfig = namedtuple("AgentConfig", "mode bundle tools approval")
 
@@ -32,11 +39,13 @@ class FlagStore:
     service that is down: a read returns the last value it saw, and
     only a flag never read falls back to its safe default."""
 
-    def __init__(self, values=None, clock=None):
+    def __init__(self, values=None, clock=None, saved=None):
         self.values = dict(values or {})
         self.clock = clock or SystemClock()
         self.reachable = True
-        self.seen = {}                 # the last value we really read
+        # the last value we really read; pass the same dict back after a
+        # restart, as a file on local disk would be
+        self.seen = {} if saved is None else saved
         self.changes = []              # (time, who, flag, value, why)
 
     def get(self, flag):
@@ -51,7 +60,8 @@ class FlagStore:
 
 
 def resolve(flags):
-    """What Relay may do right now. The kill switch is read first."""
+    """What Relay may do right now. The kill switch is checked before
+    any tool is chosen."""
     bundle = flags.get("bundle")
     if flags.get("kill_switch"):
         # the router hands every case to a person; no tool runs

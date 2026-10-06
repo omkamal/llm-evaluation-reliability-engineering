@@ -7,7 +7,7 @@ from ch07_datasets.golden import golden_card, golden_v3
 from ch07_datasets.implicit import hints, thumbs_share
 from ch07_datasets.labeling import make_items, majority_right, summary
 from ch07_datasets.redact import redact
-from ch07_datasets.relay_cases import traffic_log
+from ch07_datasets.relay_cases import MONDAY_TEXTS, from_trace, traffic_log
 from ch07_datasets.sampling import (coverage, in_online_sample,
                                     random_sample, score_record,
                                     stratified_sample)
@@ -65,11 +65,14 @@ def contamination_demo():
 
 
 def labeling_demo():
-    items = make_items()
-    for guideline in (1, 2):
+    # v1 on a pilot batch; v2's rules came from that batch's
+    # disagreements, so v2 is measured on a fresh batch of 100.
+    for guideline, items in ((1, make_items()), (2, make_items(seed=4))):
         s = summary(items, guideline)
+        lo, hi = s["kappa_ci"]
         print(f"guideline v{guideline}: agreement {s['agreement']:.2f}, "
-              f"kappa {s['kappa']:.2f} ({landis_koch(s['kappa'])})")
+              f"kappa {s['kappa']:.2f} [{lo:.2f}, {hi:.2f}], "
+              f"{landis_koch(s['kappa'])}")
         split = ", ".join(f"{k} {n}" for k, n in s["disagreements"].items())
         print("  disagreements:", split)
         print(f"  sent to the adjudicator: {s['adjudicated']} of 100")
@@ -117,9 +120,10 @@ def redact_demo():
 def sandbox_demo():
     ids = " ".join(o["order_id"] for o in seed_orders())
     print("seeded orders:", ids)
+    print("trace case:", MONDAY_TEXTS[1], "->", from_trace(MONDAY_TEXTS[1]))
     require_test_tenant(Tenant("eval-sandbox", "test"))
     try:
-        require_test_tenant(Tenant("parcelpath-prod", "live"))
+        require_test_tenant(Tenant("crateway-prod", "live"))
     except LiveTenantError as err:
         print("live tenant:", err)
 

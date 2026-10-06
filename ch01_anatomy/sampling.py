@@ -14,6 +14,6 @@ def sample(options, logits, temperature, rng):
 if __name__ == "__main__":
     options = ["refund", "return", "replace"]
     logits = [2.0, 1.6, 0.4]
-    rng = random.Random(2)
+    rng = random.Random(11)
     for t in (0, 1.0):
-        print(f"temperature {t}:", [sample(options, logits, t, rng) for _ in range(8)])
+        print(f"temperature {t}:", [sample(options, logits, t, rng) for _ in range(6)])

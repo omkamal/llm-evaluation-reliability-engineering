@@ -1,4 +1,5 @@
-"""A control map and a retention check. Not legal advice.
+"""A control map and a retention check. Not legal advice; which
+criteria a control evidences is agreed with your auditor.
 
 A control with no owner, no evidence or no criterion is a wish, so the
 map is data and a function lists the wishes.
@@ -26,10 +27,10 @@ CONTROLS = [
             ("CC7.2", "CC7.3"), ("MANAGE 4.1",),
             "chain check, share of actions with a record", "platform"),
     Control("inventory and change control", 18,
-            ("CC8.1", "CC3.2"), ("GOVERN 1.6",),
+            ("CC6.1", "CC8.1"), ("GOVERN 1.6",),
             "inventory audit, change records with approver", "release"),
     Control("human review of high-value actions", 18,
-            ("CC6.3", "PI1.3"), ("MAP 3.5", "GOVERN 3.2"),
+            ("CC5.1", "PI1.3"), ("MAP 3.5", "GOVERN 3.2"),
             "review policy, queue and override numbers", "support ops"),
     Control("validation gateway and tool checks", 2,
             ("PI1.2", "PI1.4"), ("MEASURE 2.5",),

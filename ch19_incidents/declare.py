@@ -8,14 +8,14 @@ from dataclasses import dataclass
 TARGETS = {1: (5, 30), 2: (15, 60), 3: (None, None)}
 
 
-def declare_reasons(*, irreversible_action=False, customers_hurt=False,
+def declare_reasons(*, irreversible_action=False, customers_see=False,
                     other_team_needed=False, minutes_unsolved=0):
     """Any one reason is enough. An empty list means: keep watching."""
     why = []
     if irreversible_action:
         why.append("an action that cannot be undone")
-    if customers_hurt:
-        why.append("customers are hurt")
+    if customers_see:
+        why.append("customers can see it")
     if other_team_needed:
         why.append("a second team is needed")
     if minutes_unsolved >= 60:

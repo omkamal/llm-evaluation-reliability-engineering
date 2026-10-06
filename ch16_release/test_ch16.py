@@ -12,11 +12,15 @@ from ch12_slos.budget import budget_left, error_budget
 from ch16_release import demo
 from ch16_release.bundle import (PARTS, Registry, changed_parts, digest,
                                  drift, make_bundle)
-from ch16_release.canary import Canary, Guard, budget_at_risk, verdict
+from ch16_release.canary import (GUARDS, Canary, Guard, budget_at_risk,
+                                 verdict)
 from ch16_release.capstone import (BASELINE, MEASURED, eval_gate,
-                                   month_left, start, upgrade)
+                                   month_left, shadow_rung, start,
+                                   upgrade)
+from ch16_release import faulty
 from ch16_release.faulty import (FAULTS, FULL, FaultyProvider, RateLimited,
-                                 attempt, run_experiment)
+                                 attempt, consume, run_experiment,
+                                 seed_check)
 from ch16_release.lifecycle import migration_plan, notice_days
 from ch16_release.policy import Change, release_check
 from ch16_release.relay_parts import PROMPT_V14, PROMPT_V15, contents
@@ -105,22 +109,55 @@ def test_verdict_is_worse_only_when_even_the_kind_end_is_over_margin():
 
 def test_verdict_is_ok_when_even_the_harsh_end_is_inside_the_margin():
     guard = Guard("invalid", "invalid", 0.01)
-    assert verdict(guard, outs(15, 1000), outs(150, 10_000)) == "ok"
+    assert verdict(guard, outs(30, 2000), outs(150, 10_000)) == "ok"
+    # the same rates on 1,000 chats cannot yet rule out a 1-point loss
+    assert verdict(guard, outs(15, 1000), outs(150, 10_000)) == "wait"
+
+
+def test_zero_bad_chats_in_thirty_is_not_proof():
+    guard = Guard("unasked action", "false_act", 0.02)
+    canary, control = outs(0, 30, "false_act"), outs(0, 600, "false_act")
+    assert verdict(guard, canary, control) == "wait"
+
+
+def test_failed_chats_are_compared_with_the_control():
+    assert any(g.flag == "failed" for g in GUARDS)
+    for seed in range(10):
+        bad = replace(CONTROL, name="fails 4%", p_fail=0.04)
+        res = Canary(CONTROL, bad, FakeClock(), seed=seed).run()
+        assert res.decision == "rolled back"
+        assert res.reason == "failed chats: clearly worse"
+        assert res.failed < 20
+
+
+def test_a_two_percent_failure_rate_never_reaches_everyone():
+    for seed in range(10):
+        bad = replace(CONTROL, name="fails 2%", p_fail=0.02)
+        res = Canary(CONTROL, bad, FakeClock(), seed=seed).run()
+        assert res.decision != "promoted"
 
 
 def test_the_friday_tweak_is_rolled_back_at_five_percent():
     clock = FakeClock()
     res = Canary(CONTROL, FRIDAY, clock).run()
     assert res.decision == "rolled back"
-    assert res.reason == "reschedule share: clearly worse"
+    assert res.reason == "unasked action: clearly worse"
     assert (res.minutes, res.share, res.exposed) == (25, 0.05, 135)
     assert clock.now() == 25 * 60                # injected, not real time
     assert res.unasked == 27                     # the side effects remain
 
 
-def test_a_high_error_rate_trips_the_burn_rate_guard():
-    flaky = replace(CONTROL, name="flaky", p_fail=0.08)
+def test_the_failed_chats_guard_stops_a_high_error_rate_first():
+    flaky = replace(CONTROL, name="flaky candidate", p_fail=0.08)
     res = Canary(CONTROL, flaky, FakeClock()).run()
+    assert res.decision == "rolled back"
+    assert res.reason == "failed chats: clearly worse"
+    assert (res.minutes, res.exposed, res.failed) == (5, 31, 7)
+
+
+def test_the_burn_rate_rule_is_a_fast_trip_on_its_own():
+    flaky = replace(CONTROL, name="flaky", p_fail=0.08)
+    res = Canary(CONTROL, flaky, FakeClock(), guards=()).run()
     assert res.decision == "rolled back" and res.reason.startswith("burn")
     assert res.failed >= 8
 
@@ -138,17 +175,22 @@ def test_the_burn_rate_guard_needs_enough_chats():
 
 
 def test_an_unchanged_candidate_is_not_rolled_back():
-    for seed in range(4):
+    for seed in range(20):
         res = Canary(CONTROL, CONTROL, FakeClock(), seed=seed).run()
-        assert res.decision != "rolled back"
+        assert res.decision == "promoted"
 
 
 def test_a_good_candidate_ramps_through_every_step():
     res = Canary(CONTROL, V2_TUNED, FakeClock()).run()
     assert res.decision == "promoted"
-    assert [s for _, s in res.log] == [0.05, 0.25, 0.5]
-    minutes = [m for m, _ in res.log]
-    assert minutes == sorted(minutes) and minutes[0] >= 30
+    assert res.log == [(30, 0.05), (60, 0.25), (115, 0.5)]
+
+
+def test_only_the_last_step_needs_every_guard_to_say_ok():
+    never_ok = (Guard("slow first token", "slow", 0.0),)   # A/A: hi > 0
+    res = Canary(CONTROL, CONTROL, FakeClock(), guards=never_ok).run()
+    assert [s for _, s in res.log] == [0.05, 0.25]
+    assert res.decision == "held" and res.share == 0.5
 
 
 def test_a_looser_margin_is_slower_to_roll_back():
@@ -156,8 +198,17 @@ def test_a_looser_margin_is_slower_to_roll_back():
         guards = (Guard("reschedule share", "acted", margin),)
         return Canary(CONTROL, FRIDAY, FakeClock(), guards=guards).run()
     tight, loose = run(0.02), run(0.10)
-    assert tight.minutes < loose.minutes
+    assert (tight.minutes, tight.exposed, tight.unasked) == (25, 135, 27)
+    assert (loose.minutes, loose.exposed, loose.unasked) == (40, 413, 79)
     assert loose.decision == "rolled back"
+
+
+def test_looking_every_five_minutes_with_no_margin_cries_wolf():
+    zero = (Guard("reschedule share", "acted", 0.0),)
+    rolled = [Canary(CONTROL, CONTROL, FakeClock(), seed=s,
+                     guards=zero).run(limit=240).decision == "rolled back"
+              for s in range(20, 40)]
+    assert sum(rolled) >= 2            # a false alarm with no real change
 
 
 def test_a_canary_that_cannot_decide_is_held_not_promoted():
@@ -184,19 +235,50 @@ def run_two():
     return run_experiment(failover=True)
 
 
-def test_run_one_breaks_the_hypothesis_at_994(run_one):
+def test_run_one_breaks_the_hypothesis(run_one):
     run = run_one
-    assert len(run.failed) == 12 and run.availability == 0.994
+    assert len(run.failed) == 74 and run.availability == 0.963
     assert not run.holds and run.ran_from_partial == 0
-    assert run.injected == {"rate_limited": 127, "timeout": 50,
-                            "stream_cut": 48, "bad_json": 48}
+    assert run.injected == {"rate_limited": 126, "timeout": 49,
+                            "stream_cut": 48, "bad_json": 46}
+    assert run.drafts == 48 + 46       # every cut and broken call held
 
 
-def test_failing_over_when_retries_run_out_holds_at_997(run_two):
+def test_failing_over_when_retries_run_out_holds(run_two):
     run = run_two
-    assert len(run.failed) == 6 and run.availability == 0.997
+    assert len(run.failed) == 2 and run.availability == 0.999
     assert run.holds
     assert run.first_token_rate >= 0.95
+
+
+def test_one_seed_is_one_draw_and_the_finding_survives_ten():
+    checks = seed_check()
+    assert len(checks) == 10
+    assert all(one > 10 for one, _ in checks)      # run 1 always breaks
+    assert all(two <= 10 for _, two in checks)     # run 2 always holds
+
+
+def test_broken_json_is_a_failed_chat_unless_a_repair_works():
+    run = run_experiment(n=100, faults={"bad_json": 1.0})
+    assert run.availability == 0.0                 # never counted as ok
+    assert run.drafts == run.injected["bad_json"]
+
+
+def test_every_second_try_is_paid_from_the_retry_budget():
+    run = run_experiment(n=500, faults={"stream_cut": 1.0})
+    calls = run.injected["stream_cut"]
+    assert calls <= 500 + 5 + 0.1 * 500            # burst 5, refill 10%
+
+
+def test_a_tool_call_from_an_unfinished_stream_is_counted(monkeypatch):
+    async def lenient_consume(events, show, clock=None):
+        res = await consume(events, show, clock)
+        if res.status != "complete" and res.partial_tool:
+            res.tool_call = {"draft": res.partial_tool}   # do not do this
+        return res
+    monkeypatch.setattr(faulty, "consume", lenient_consume)
+    run = run_experiment(n=300)
+    assert run.ran_from_partial > 0 and not run.holds
 
 
 def test_the_experiment_is_repeatable():
@@ -206,16 +288,17 @@ def test_the_experiment_is_repeatable():
 
 def test_the_figure_uses_the_failures_the_experiment_produced(run_one,
                                                               run_two):
-    assert run_one.failed == [113, 686, 731, 1019, 1080, 1087,
-                              1459, 1467, 1470, 1690, 1741, 1744]
-    assert run_two.failed == [731, 1087, 1459, 1470, 1690, 1741]
+    assert run_one.failed[:6] == [20, 28, 71, 72, 110, 111]
+    assert run_two.failed == [457, 1126]
 
 
-def test_a_stop_condition_aborts_a_runaway_experiment():
+def test_a_stop_condition_ends_a_runaway_experiment_early():
     run = run_experiment(faults={"rate_limited": 0.30, "timeout": 0.02},
-                         abort_below=0.9)
-    assert run.chats == 50 and "70%" in run.aborted
-    assert len(run_experiment(n=200).aborted) == 0
+                         stop_after=3)
+    assert run.chats == 11 and len(run.failed) == 3
+    assert run.aborted == "3 failed chats within 50"
+    calm = run_experiment(n=300, failover=True, stop_after=3)
+    assert calm.aborted == "" and calm.chats == 300
 
 
 def test_virtual_time_costs_nothing():
@@ -263,13 +346,21 @@ def test_a_model_upgrade_asks_the_ladder(left, flight, expected):
     assert release_check(model, left, flight)[0] == expected
 
 
-def test_fixes_ship_on_every_rung_and_routine_changes_survive_a_freeze():
+def test_fixes_ship_on_every_rung_and_nothing_else_below_a_quarter():
     fix = Change("security_fix", "patch")
     assert all(release_check(fix, x)[0] == "ship"
                for x in (0.9, 0.4, 0.1, 0.0))
     routine = Change("docs", "runbook typo")
-    assert release_check(routine, 0.0)[0] == "ship"
     assert release_check(routine, 0.1)[0] == "hold"
+    assert release_check(routine, 0.0)[0] == "hold"
+
+
+@pytest.mark.parametrize("kind", ["model", "docs", "reliability_fix"])
+def test_the_ladder_never_loosens_as_the_error_budget_falls(kind):
+    levels = (0.9, 0.6, 0.5, 0.4, 0.25, 0.2, 0.1, 0.0, -0.1)
+    held = [release_check(Change(kind, "x"), x, 1)[0] == "hold"
+            for x in levels]
+    assert held == sorted(held)        # once held, held all the way down
 
 
 def test_every_kind_of_change_is_a_release():
@@ -338,6 +429,7 @@ def test_roll_back_restores_the_whole_combination():
 
 def test_a_notice_window_and_the_plan_inside_it():
     assert notice_days(date(2026, 9, 30), date(2026, 11, 30)) == 61
+    assert [d for d, _ in migration_plan(61)] == [6, 15, 24, 34, 46, 55]
     plan = migration_plan(60)
     assert [d for d, _ in plan] == [6, 15, 24, 33, 45, 54]
     assert [d for d, _ in migration_plan(80)] == [8, 20, 32, 44, 60, 72]
@@ -375,7 +467,7 @@ def test_build_or_buy_turns_on_volume():
     v2 = api_cost(4.6, 5000)
     even = breakeven_tasks(24_600, v2, 0.004)
     assert even == pytest.approx(1_294_737, abs=1)
-    assert even > 900_000                       # ParcelPath is below it
+    assert even > 900_000                       # Crateway is below it
     assert breakeven_tasks(12_300, v2, 0.004) < 900_000
     assert self_hosted_cost(24_600, 0.004, even) == pytest.approx(v2)
 
@@ -401,8 +493,24 @@ def test_every_rung_would_have_caught_the_straight_swap():
     assert verdicts == {"eval gate": False, "rehearsal": True,
                         "shadow": False, "error budget": True,
                         "bundle": True, "canary": False}
-    assert result.decision == "rolled back" and result.minutes == 140
+    assert result.decision == "rolled back" and result.minutes == 45
+    assert result.exposed == 529
     assert registry.live.id == "R-117"           # nothing was promoted
+
+
+def test_an_inconclusive_shadow_waits_and_never_passes():
+    short = shadow_rung(V2_TUNED, n=2000)        # 171 graded chats
+    assert short.says == "wait" and short.passed  # the next rung decides
+    assert "(-1.2 to +4.1)" in short.detail      # past the 3-point margin
+    assert shadow_rung(V2_TUNED).says == "pass"
+    assert shadow_rung(V2_UNTUNED).says == "STOP"
+
+
+def test_each_upgrade_gets_a_bundle_id_of_its_own():
+    swap, tuned = start(), start()
+    upgrade("a-large-v2, prompt v14", month_left(), swap, stop=False)
+    upgrade("a-large-v2, prompt v15", month_left(), tuned)
+    assert tuned.live.id == "R-119" and swap.live.id == "R-117"
 
 
 def test_the_ladder_stops_at_the_first_failed_rung():
@@ -419,7 +527,7 @@ def test_the_tuned_upgrade_ships_and_can_be_rolled_back():
     rungs, result = upgrade("a-large-v2, prompt v15", month_left(),
                             registry)
     assert all(r.passed for r in rungs)
-    assert result.decision == "promoted" and registry.live.id == "R-118"
+    assert result.decision == "promoted" and registry.live.id == "R-119"
     assert registry.roll_back().fingerprint() == before
 
 
@@ -437,9 +545,14 @@ def test_the_demo_prints_the_numbers_the_chapter_quotes():
     with redirect_stdout(buf):
         demo.main()
     out = buf.getvalue()
-    for line in ("run 1: 99.4% available (12 of 2,000 failed)",
-                 "run 2, failover to B: 99.7% available (6 of 2,000 failed)",
-                 "rolled back at minute 25: reschedule share",
+    for line in ("run 1: 96.3% available (74 of 2,000 failed)",
+                 "run 2, failover to B: 99.9% available (2 of 2,000 failed)",
+                 "partial tool calls: 94 held, 0 run",
+                 "10 seeds: run 1 broke it in 10 (52 to 88 failed), "
+                 "run 2 in 0 (0 to 4)",
+                 "rolled back at minute 25: unasked action",
+                 "control against itself, 50 seeds: 0 rolled back",
                  "rollback drill: live R-117",
                  "choice: a-large-v2 p15"):
         assert line in out
+    assert max(len(x) for x in out.splitlines()) <= 74

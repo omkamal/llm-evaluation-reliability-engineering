@@ -6,6 +6,7 @@ from ch08_rag.corpus import DOCS, OLD_FREE_SHIPPING
 from ch08_rag.lifecycle import fingerprint
 from ch10_providers.catalog import (NoEligibleProvider, Request,
                                     make_catalog)
+from ch10_providers.ranking import Signals
 from ch11_traces.context import (MUST_KEEP, careful_summarize,
                                  fields_lost, long_session, summarize)
 from ch12_slos.sheet import SHEET
@@ -155,15 +156,26 @@ def test_the_check_has_the_error_rates_it_claims():
     assert alarms == pytest.approx(0.03, abs=0.005)
 
 
-def test_the_cascade_steps_up_19_percent_and_saves_61(cases):
+def test_the_cascade_steps_up_19_percent_and_saves_44(cases):
     base, _ = frontier_only(cases)
     tasks, stepped, held = cascade(cases)
     usd, ok, per, p95 = summary(tasks)
     assert round(stepped / len(cases), 2) == 0.19 and held == 0
-    assert round(usd, 4) == 0.0031
-    assert round(1 - usd / summary(base)[0], 2) == 0.61
-    assert p95 == pytest.approx(3.3)         # a step-up pays twice in time
+    assert round(usd, 4) == 0.0044
+    assert round(1 - per / summary(base)[2], 2) == 0.44
+    assert p95 == pytest.approx(3.5)         # a step-up pays twice in time
     assert summary(base)[3] == pytest.approx(2.4)
+
+
+def test_the_check_is_a_model_call_and_every_task_pays_for_it(cases):
+    # before the fix the judge cost nothing and the cascade "saved" 61%
+    judge = call_usd("small", PREFIX + 250, 10)
+    small = call_usd("small", PREFIX, 250)
+    tasks, _, _ = cascade(cases)
+    assert min(t.usd for t in tasks) == pytest.approx(small + judge)
+    assert judge > 0.8 * small               # about as much again
+    base, _ = frontier_only(cases)
+    assert compare(base, tasks).saving < 0.5
 
 
 def test_small_only_is_cheapest_and_fails_about_one_in_five(cases):
@@ -190,13 +202,16 @@ def test_the_cap_holds_step_up_spend_and_flags_the_rest(cases):
     tasks, stepped, held = cascade(cases, cap_usd=1.00)
     assert held > 0 and stepped * 0.008 <= 1.00
     assert stepped + held == cascade(cases)[1]
+    assert (stepped, held) == (124, 64)
+    # a held task goes to a person: Relay did not resolve it
+    assert round(summary(tasks)[1], 3) == 0.896
 
 
 def test_paired_comparison_ships_the_cascade_and_blocks_the_lenient(cases):
     base, _ = frontier_only(cases)
     good = compare(base, cascade(cases)[0])
     bad = compare(base, cascade(cases, true_negative=0.60)[0])
-    assert good.ship and round(good.saving, 2) == 0.61
+    assert good.ship and round(good.saving, 2) == 0.44
     assert good.low > -0.02 and round(good.change, 3) == -0.009
     assert not bad.ship and bad.high < -0.03
     with pytest.raises(ValueError):
@@ -217,6 +232,27 @@ def test_an_irreversible_step_never_goes_to_the_small_tier():
     assert route(cat, req) == "Provider B small"
     assert route(cat, req, ("issue_refund",)) == "Provider A"
     assert route(cat, req, ("lookup_order",)) == "Provider B small"
+    cat[2].tools = True                         # the day it gains tools
+    refund = Request("global", 8_000, True)
+    assert route(cat, refund) == "Provider B small"
+    assert route(cat, refund, ("issue_refund",)) == "Provider A"
+
+
+def test_a_cheap_provider_that_is_full_or_failing_is_skipped():
+    # before the fix route() ranked by price alone and picked B small
+    req = Request("global", 8_000, False)
+    full = make_catalog()
+    full[2].in_flight = full[2].limit
+    assert route(full, req) == "Provider A"
+    calm = {"Provider A": Signals(0.99, 1.2, 0.33),
+            "Provider B": Signals(0.99, 1.5, 0.5),
+            "Provider B small": Signals(0.99, 0.8, 1.0)}
+    assert route(make_catalog(), req, (), calm) == "Provider B small"
+    broken = dict(calm, **{"Provider B small":
+                           Signals(0.40, 4.0, 1.0, "open")})
+    assert route(make_catalog(), req, (), broken) == "Provider A"
+    failing = dict(calm, **{"Provider B small": Signals(0.50, 0.8, 1.0)})
+    assert route(make_catalog(), req, (), failing) == "Provider A"
 
 
 def test_an_eu_request_never_reaches_provider_a_whatever_the_price():
@@ -336,6 +372,10 @@ def test_an_answer_built_from_a_customers_data_is_never_stored():
     n = len(cache.entries)
     assert cache.store("standard", "Where is my order?", "Tomorrow.", {},
                        tools=("lookup_order",)) is False
+    # an allowlist: a tool nobody listed is not trusted either
+    for tool in ("issue_refund", "reset_password", "lookup_customer"):
+        assert cache.store("standard", "Is it done?", "Yes.", {},
+                           tools=("lookup_policy", tool)) is False
     assert len(cache.entries) == n
     assert cache.store("standard", "What are the support hours?",
                        "8:00 to 20:00.", {}, tools=("lookup_policy",))
@@ -373,6 +413,17 @@ def test_a_lossy_summary_drops_the_address_and_a_careful_one_keeps_it():
     assert fields_lost(MUST_KEEP, lossy) == ["delivery_address"]
     assert fields_lost(MUST_KEEP, careful) == []
     assert levers.saved_per_call(31_800, 7_900) == pytest.approx(0.0478)
+
+
+def test_with_the_cache_on_compression_saves_a_tenth_and_pays_back_late():
+    turns = long_session()
+    new = levers.compress(turns, 7_900, careful_summarize)
+    cached = levers.saved_per_call(31_800, 7_900, cached=True)
+    assert cached == pytest.approx(0.00478)
+    assert cached == pytest.approx(levers.saved_per_call(
+        31_800, 7_900) / 10)
+    assert levers.payback_calls(turns, new) == 6
+    assert levers.payback_calls(turns, new, summary_tier="frontier") == 14
 
 
 def test_the_reply_is_the_dear_side():
@@ -440,6 +491,12 @@ def test_commit_to_the_level_demand_reaches_often_enough():
     hours_at_least = sum(d >= best for d in profile) / len(profile)
     assert hours_at_least >= b
     assert sum(d >= 540 for d in profile) / len(profile) < b
+    # the shares the chapter quotes: best 81%, average 84%, peak 106%
+    whole = day(profile, 0, b)
+    shares = [round(day(profile, level, b) / whole, 2)
+              for level in (best, round(sum(profile) / 24), 720)]
+    assert shares == [0.81, 0.84, 1.06]
+    assert sum(d >= best for d in profile) == 15
 
 
 # ---- dashboard --------------------------------------------------------
@@ -465,7 +522,7 @@ def test_the_demo_prints_the_numbers_the_chapter_quotes(capsys):
     demo.main()
     out = capsys.readouterr().out
     for line in ("8.3x the input tokens, 7.5x the cost",
-                 "cascade           0.0031    94.6%      0.0033    3.3"
+                 "cascade           0.0044    94.6%      0.0047    3.5"
                  "      19%",
                  "stable prefix first         33,960    $0.068      92%",
                  "parallel   4.5 s  critical path: plan > search > answer"):
@@ -484,14 +541,21 @@ def test_try_it_one_tighten_the_check(cases=None):
         v = compare(base, tasks)
         rows.append((round(stepped / len(cases), 2), round(v.saving, 2),
                      round(v.low * 100, 1), v.ship))
-    assert rows == [(0.16, 0.63, -4.1, False), (0.18, 0.62, -2.6, False),
-                    (0.19, 0.61, -1.5, True), (0.20, 0.60, -0.5, True)]
+    assert rows == [(0.16, 0.46, -4.1, False), (0.18, 0.45, -2.6, False),
+                    (0.19, 0.44, -1.5, True), (0.20, 0.44, -0.5, True)]
 
 
 def test_try_it_two_move_the_gap():
     assert conversation(20, gap=60.0)[1] == pytest.approx(0.917, abs=0.001)
     assert conversation(20, gap=299.0)[1] == pytest.approx(0.917, abs=0.001)
     assert conversation(20, gap=300.0)[1] == 0.0
+
+
+def test_try_it_two_a_dear_summarizer():
+    turns = long_session()
+    new = levers.compress(turns, 7_900, careful_summarize)
+    assert levers.payback_calls(turns, new, summary_tier="frontier") == 14
+    assert call_usd("frontier", 24_100, 200) == pytest.approx(0.0498)
 
 
 def test_try_it_three_a_slower_day():
@@ -506,7 +570,7 @@ def test_check_questions_one_and_two():
 
 
 def test_a_cascade_step_up_pays_twice_in_time(cases):
-    assert 0.9 + 2.4 == pytest.approx(3.3)
+    assert 0.8 + 0.3 + 2.4 == pytest.approx(3.5)
     assert summary(cascade(cases)[0])[3] > summary(
         frontier_only(cases)[0])[3]
 

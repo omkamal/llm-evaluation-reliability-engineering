@@ -18,7 +18,7 @@ class Turn:
 
 def long_session():
     """26 turns, 31,800 tokens; the address is the second turn."""
-    turns = [Turn("system", "You are Relay, ParcelPath's assistant.", 600),
+    turns = [Turn("system", "You are Relay, Crateway's assistant.", 600),
              Turn("customer", f"My address is {ADDRESS}.", 60)]
     turns += [Turn("mixed", f"(earlier turn {i})", 1_202)
               for i in range(1, 21)]

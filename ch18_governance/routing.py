@@ -11,14 +11,20 @@ def expected_loss_cents(p_error, amount_cents):
 
 
 def needs_review(p_error, amount_cents,
-                 review_cost_cents=REVIEW_COST_CENTS):
-    """A person looks when being wrong costs more than looking."""
-    return expected_loss_cents(p_error, amount_cents) > review_cost_cents
+                 review_cost_cents=REVIEW_COST_CENTS, catch_rate=1.0):
+    """A person looks when the loss a review prevents (the reviewer
+    catches only `catch_rate` of the errors) beats the cost of looking."""
+    saved = catch_rate * expected_loss_cents(p_error, amount_cents)
+    return saved > review_cost_cents
 
 
-def break_even_cents(p_error, review_cost_cents=REVIEW_COST_CENTS):
-    """The amount above which a review pays for itself."""
-    return review_cost_cents / p_error
+def break_even_cents(p_error, review_cost_cents=REVIEW_COST_CENTS,
+                     catch_rate=1.0):
+    """The amount above which a review pays for itself. A reviewer who
+    catches nothing never pays for the review."""
+    if p_error * catch_rate <= 0:
+        return float("inf")
+    return review_cost_cents / (p_error * catch_rate)
 
 
 @dataclass

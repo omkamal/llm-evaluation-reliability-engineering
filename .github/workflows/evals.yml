@@ -6,27 +6,32 @@ on:
       - 'ch15_cicd/relay/schemas/**'
       - 'ch15_cicd/relay/config/**'
       - 'ch15_cicd/relay/evals/**'
+      - 'ch15_cicd/*.py'
+      - 'requirements*.txt'
+      - '.github/workflows/evals.yml'
   schedule:
-    - cron: '0 3 * * *'           # nightly, 03:00 UTC
+    - cron: '17 3 * * *'          # nightly, 03:17 UTC, off the hour
   push:
     tags: ['v*']                  # release tags
   workflow_dispatch:              # a manual smoke run
 concurrency:
-  group: evals-${{ github.ref }}
+  group: evals-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read
   pull-requests: write
 jobs:
   evals:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15           # a runaway run stops itself
+    runs-on: ubuntu-24.04         # pinned, as the model is
+    timeout-minutes: >-           # a runaway run stops itself
+      ${{ github.event_name == 'pull_request' && 15 || 120 }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: pip              # keyed on requirements.txt
+          cache: pip              # keyed on both requirements files
+          cache-dependency-path: requirements*.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m ch15_cicd.guard
       - if: >-
@@ -36,7 +41,7 @@ jobs:
           python -m ch15_cicd.run_tier --sample 50
           --seed ${{ github.run_number }}
       - if: github.event_name == 'schedule'
-        run: python -m ch15_cicd.run_tier --trials 3
+        run: python -m ch15_cicd.run_tier --trials 3 --check-baseline
       - if: startsWith(github.ref, 'refs/tags/v')
         run: python -m ch15_cicd.run_tier --trials 5 --safety
       - name: Gate
@@ -49,7 +54,7 @@ jobs:
             | tee results/report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Comment on the pull request
         if: >-
-          always() && github.event_name == 'pull_request' &&
+          github.event_name == 'pull_request' && !cancelled() &&
           github.event.pull_request.head.repo.full_name ==
           github.repository && hashFiles('results/report.md') != ''
         env:
@@ -58,8 +63,8 @@ jobs:
         run: >-
           gh pr comment "$PR" --edit-last --create-if-none
           --body-file results/report.md
-      - uses: actions/upload-artifact@v7
-        if: always()
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
         with:
           name: eval-results
           path: results/

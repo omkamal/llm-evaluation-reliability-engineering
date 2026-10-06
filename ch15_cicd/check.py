@@ -2,7 +2,10 @@
 
 Run an UNCHANGED build (an A/A check) and the gate should almost never
 block it. Run the Friday tweak and it should block it most of the time.
-The numbers are simulated with Chapter 4's noise and are illustrative.
+Each run draws its own baseline of main: one committed baseline file
+carries one draw's luck, and every count made against it shares that
+luck. The numbers are simulated with Chapter 4's noise and are
+illustrative.
 """
 import json
 import random
@@ -10,8 +13,7 @@ from collections import Counter
 
 from ch04_numbers.stats import mean
 from ch15_cicd import repo, suite
-from ch15_cicd.gate import ORDER, Rule, decide
-from ch15_cicd.run_tier import BASELINE
+from ch15_cicd.gate import Rule, decide, overall
 from ch15_cicd.tiers import TIERS, pick_sample
 
 
@@ -30,51 +32,53 @@ def one_run(build, tier_name, rng, sample_seed):
                             tier.safety_trials)
 
 
+def pairs(build, tier_name, runs=100, seed=0, baseline=None):
+    """`runs` pairs (main's baseline, a run of `build` at `tier_name`).
+    Each baseline is a fresh full-strength run of main, unless one fixed
+    `baseline` is given, as a committed file would be."""
+    rng = random.Random(seed)
+    for r in range(runs):
+        base = baseline or one_run("main", "release", rng, sample_seed=r)
+        yield base, one_run(build, tier_name, rng, sample_seed=r)
+
+
 def verdict_counts(build, tier_name, runs=100, seed=0, resamples=300,
                    floor=True, on_unsure=None):
-    """{PASS, WARN, BLOCK} counts over `runs` runs against main.
+    """{PASS, WARN, BLOCK} counts over `runs` runs.
 
     With floor=False the never-fail rule is left out, to show what the
     intervals alone would have decided. `on_unsure` overrides every
     rule's setting (try "block")."""
-    base = json.loads(BASELINE.read_text())["cases"]
     rules, min_cases = load_rules()
     if on_unsure:
         rules = [Rule(r.slice, r.margin, on_unsure) for r in rules]
-    rng = random.Random(seed)
     counts = Counter()
-    for r in range(runs):
-        new = one_run(build, tier_name, rng, sample_seed=r)
+    for base, new in pairs(build, tier_name, runs, seed):
         result = decide(base, new, rules, min_cases=min_cases,
                         resamples=resamples)
-        rows = [row["verdict"] for row in result["rows"]]
-        verdicts = rows + ([result["floor"]["verdict"]] if floor else [])
-        counts[max(verdicts, key=ORDER.get)] += 1
+        verdicts = [row["verdict"] for row in result["rows"]]
+        if floor:
+            verdicts.append(result["floor"]["verdict"])
+        counts[overall(verdicts)] += 1
     return counts
 
 
 def lower_bounds(build, tier_name, runs=100, seed=0, resamples=300):
     """Lower bound of the overall interval in each of `runs` runs."""
-    base = json.loads(BASELINE.read_text())["cases"]
     rules, min_cases = load_rules()
-    rng = random.Random(seed)
     lows = []
-    for r in range(runs):
-        new = one_run(build, tier_name, rng, sample_seed=r)
+    for base, new in pairs(build, tier_name, runs, seed):
         row = decide(base, new, rules, min_cases=min_cases,
                      resamples=resamples)["rows"][0]
-        lows.append(row["lo"])
+        lows.append(round(row["lo"], 6))      # as the gate rounds it
     return sorted(lows)
 
 
-def hard_line_blocks(build, tier_name, runs=100, seed=0):
+def hard_line_blocks(build, tier_name, runs=100, seed=0, baseline=None):
     """Chapter 3's gate on the same runs: block if the score is below
     main's own score. Counts the blocks."""
-    base = json.loads(BASELINE.read_text())["cases"]
-    rng = random.Random(seed)
     blocked = 0
-    for r in range(runs):
-        new = one_run(build, tier_name, rng, sample_seed=r)
+    for base, new in pairs(build, tier_name, runs, seed, baseline):
         ids = sorted(new)
         before = mean([mean(base[i]["trials"]) for i in ids])
         after = mean([mean(new[i]["trials"]) for i in ids])

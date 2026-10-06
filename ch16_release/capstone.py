@@ -10,7 +10,7 @@ from functools import lru_cache
 from common.clock import FakeClock
 from ch12_slos.budget import budget_left
 from ch16_release.bundle import Registry, make_bundle
-from ch16_release.canary import Canary
+from ch16_release.canary import GUARDS, Canary
 from ch16_release.faulty import run_experiment
 from ch16_release.policy import Change, release_check
 from ch16_release.relay_parts import PROMPT_V14, PROMPT_V15, contents
@@ -33,27 +33,41 @@ MEASURED = {   # offline, on the eval set: v2 is faster, cheaper, worse
     "a-large-v2, prompt v15": {"quality": 0.91, "first_pass": 0.990,
                                "p95_first_token": 1.10,
                                "cost": api_cost(4.6, 5400)}}
-VERSIONS = {  # name: (behaviour, prompt text, prompt label)
-    "a-large-v2, prompt v14": (V2_UNTUNED, PROMPT_V14, "prompt v14"),
-    "a-large-v2, prompt v15": (V2_TUNED, PROMPT_V15, "prompt v15")}
+VERSIONS = {  # name: (behaviour, prompt text, prompt label, bundle id)
+    "a-large-v2, prompt v14": (V2_UNTUNED, PROMPT_V14, "prompt v14",
+                               "R-118"),
+    "a-large-v2, prompt v15": (V2_TUNED, PROMPT_V15, "prompt v15",
+                               "R-119")}
+WRONG_POLICY = next(g for g in GUARDS if g.flag == "wrong_policy")
 
 
 @dataclass
 class Rung:
     name: str
-    passed: bool
+    says: str          # "pass", "STOP", or "wait": the next rung decides
     detail: str
+
+    @property
+    def passed(self):
+        return self.says != "STOP"
+
+
+def rung(name, ok, detail):
+    return Rung(name, "pass" if ok else "STOP", detail)
 
 
 def eval_gate(metrics, baseline=BASELINE):
-    """A stand-in for Chapter 15's gate: the same four numbers."""
+    """A stand-in for Chapter 15's gate: four point limits of its own.
+
+    Chapter 15's real gate puts a paired interval on quality.
+    """
     failed = [m for m, ok in RULES.items() if not ok(metrics[m], baseline[m])]
     if failed:
         m = failed[0]
-        return Rung("eval gate", False,
+        return rung("eval gate", False,
                     f"blocked on {m}: {metrics[m]:.2f} "
                     f"against {baseline[m]:.2f}")
-    return Rung("eval gate", True, f"all {len(RULES)} limits met")
+    return rung("eval gate", True, f"all {len(RULES)} limits met")
 
 
 @lru_cache(maxsize=None)
@@ -62,36 +76,42 @@ def rehearsal():
     return run_experiment(failover=True)
 
 
-def shadow_rung(candidate, n=2000):
-    chats = make_chats(n)
-    r = shadow(chats, CONTROL, candidate, "wrong_policy", resamples=200)
-    lean = r.worse > r.better and r.p_flips < 0.05
-    return Rung("shadow", not lean,
-                f"wrong policy {r.old_rate:.1%} to {r.new_rate:.1%}; "
-                f"{r.worse} worse, {r.better} better (p {r.p_flips:.4f})")
+def shadow_rung(candidate, n=3000):
+    """The canary's margin rule, on the shadow's paired interval.
+
+    Half an hour of traffic: on 2,000 chats (171 graded) the tuned
+    prompt's interval could not clear the 3-point margin either way.
+    """
+    r = shadow(make_chats(n), CONTROL, candidate, "wrong_policy")
+    lo, hi = r.interval
+    says = ("STOP" if lo > WRONG_POLICY.margin
+            else "pass" if hi <= WRONG_POLICY.margin else "wait")
+    return Rung("shadow", says,
+                f"wrong policy {100 * r.diff:+.1f} points "
+                f"({100 * lo:+.1f} to {100 * hi:+.1f}), {r.n} graded")
 
 
 def upgrade(name, left, registry, stop=True):
     """Walk one candidate up the ladder. `stop=False` keeps going past a
     failed rung, to show what each later rung would have caught."""
-    version, prompt, label = VERSIONS[name]
+    version, prompt, label, bundle_id = VERSIONS[name]
     rungs = [eval_gate(MEASURED[name])]
     drill = rehearsal()
-    rungs.append(Rung("rehearsal", drill.holds,
+    rungs.append(rung("rehearsal", drill.holds,
                       f"availability {drill.availability:.1%}"))
     rungs.append(shadow_rung(version))
     change = Change("model", name)
     verdict, why = release_check(change, left)
-    rungs.append(Rung("error budget", verdict == "ship", why))
+    rungs.append(rung("error budget", verdict == "ship", why))
     old = registry.live
-    new = make_bundle("R-118", contents(prompt, "a-large-v2", label),
+    new = make_bundle(bundle_id, contents(prompt, "a-large-v2", label),
                       old.eval_set, old.judge)
-    rungs.append(Rung("bundle", True,
+    rungs.append(rung("bundle", True,
                       f"{new.id} {new.fingerprint()}, back to {old.id}"))
     if stop and not all(r.passed for r in rungs):
         return rungs, None
     result = Canary(CONTROL, version, FakeClock()).run()
-    rungs.append(Rung("canary", result.decision == "promoted",
+    rungs.append(rung("canary", result.decision == "promoted",
                       f"{result.decision} at minute {result.minutes}: "
                       f"{result.reason}"))
     if result.decision == "promoted":
@@ -108,5 +128,5 @@ def start():
 
 
 def month_left():
-    """Chapter 12's example month: 1,900 of 5,000 failed chats spent."""
+    """Chapter 12's example 28 days: 1,900 of 5,000 failed chats spent."""
     return budget_left(0.995, 1_000_000, 1_900)

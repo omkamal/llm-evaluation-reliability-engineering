@@ -6,7 +6,8 @@ from ch12_slos.budget import (burn_rate, days_to_empty, error_budget,
 from ch12_slos.burn import (RULES, Series, alert_decision, long_window_only,
                             minutes_to_alert, minutes_to_clear)
 from ch12_slos.health import Dependency, health_table
-from ch12_slos.quality import (cost_per_success, judge_reading,
+from ch12_slos.quality import (cost_per_success, daily_reads,
+                               judge_corrected, judge_reading,
                                judge_verdict, refusal_rate)
 from ch12_slos.report import Spend, render_report
 from ch12_slos.sheet import SHEET, check_sheet, line
@@ -48,27 +49,42 @@ def demo_quality():
         rate, (lo, hi), verdict = judge_verdict(passes, 5000, 0.90)
         print(f"week {week}: {passes:,} of 5,000 = {rate:.1%} "
               f"({lo:.1%} to {hi:.1%}) {verdict}")
+    print("true rate 86%")
     for name, tpr, tnr in (("Friday's judge", 0.97, 0.25),
                            ("calibrated judge", 0.91, 0.94)):
         reading = judge_reading(0.86, tpr, tnr)
-        print(f"true 86%, {name} (TPR {tpr}, TNR {tnr}) reads {reading:.1%}")
+        fixed = judge_corrected(reading, tpr, tnr)
+        print(f"{name} (TPR {tpr}, TNR {tnr}): reads {reading:.1%}, "
+              f"corrected {fixed:.1%}")
     replies = ["Your order ships Monday."] * 984 + ["I can't help."] * 16
     print(f"refusals: {refusal_rate(replies):.1%} of {len(replies)} replies")
     print(f"cost per success: ${31.20 / 980:.4f} (spend $31.20, 980 ok)")
 
 
+def inc4_good_rates():
+    """A week at 91%, then nine days sliding to 86% (INC-4)."""
+    return [0.91] * 7 + [0.91 - 0.05 * day / 9 for day in range(1, 10)]
+
+
+def demo_inc4_replay():
+    print("== INC-4 replayed through the weekly verdict")
+    reads = daily_reads(inc4_good_rates(), 714, 0.90)    # 5,000 a week
+    unclear, missed = reads.index("unclear"), reads.index("missed")
+    print(f"day 1: {reads[1]}; unclear from day {unclear}, "
+          f"missed from day {missed}")
+
+
 def demo_budget():
     print("== error budget")
     print(f"chat layer: {error_budget(0.995, 1_000_000):,} of 1,000,000 chats")
-    print(f"task layer: {error_budget(0.99, 900_000):,} of 900,000 tasks (30 d)")
-    print(f"task layer: {error_budget(0.99, 840_000):,} of 840,000 tasks (28 d)")
+    print(f"task layer: {error_budget(0.99, 840_000):,} of 840,000 tasks")
 
 
 def demo_burn_arithmetic():
     print("== burn rate arithmetic")
     burn = burn_rate(72, 1000, 0.995)
-    print(f"7.2% failing against a 0.5% budget: burn {burn:.1f}x")
-    print(f"budget lasts {days_to_empty(burn):.2f} days")
+    print(f"7.2% failing against a 0.5% error budget: burn {burn:.1f}x")
+    print(f"error budget lasts {days_to_empty(burn):.2f} days")
     print(f"one hour at {burn:.1f}x uses {share_spent(burn, 1):.1%}")
     print(f"a steady 0.8% leak: burn {burn_rate(8, 1000, 0.995):.1f}x, "
           f"empty in {days_to_empty(1.6):.1f} days")
@@ -137,6 +153,40 @@ def demo_blip_and_clear():
               f"quiet {cleared} min after the fix")
 
 
+def quiet_night(gap_s=300):
+    """Three quiet days at one chat every `gap_s` seconds."""
+    clock = FakeClock()
+    series = Series(clock)
+    for _ in range(4320 * 60 // gap_s):
+        clock.sleep(gap_s)
+        series.record(0, 1)
+    return clock, series
+
+
+def outage_alert_minutes(gap_s=300):
+    """Every chat fails after a quiet night: minutes to an alert."""
+    clock, series = quiet_night(gap_s)
+    for step in range(1, 1000):
+        clock.sleep(gap_s)
+        series.record(1, 1)
+        decision = alert_decision(series)
+        if decision.action != "ok":
+            return step * gap_s // 60, decision
+
+
+def demo_quiet_night():
+    print("== a quiet night: 12 chats an hour, then one fails")
+    clock, series = quiet_night()
+    clock.sleep(300)
+    series.record(1, 1)
+    bare = alert_decision(series, min_chats=0)
+    print(f"no floor: {bare.action} "
+          f"(burn {bare.long_burn:.1f}x over 1 h)")
+    print(f"at least 100 chats: {alert_decision(series).action}")
+    minutes, d = outage_alert_minutes()
+    print(f"every chat failing: {d.action} after {minutes} min")
+
+
 def demo_sheet(tasks):
     print("== the SLO sheet, one illustrative 28 days")
     secs = [t.seconds for t in tasks]
@@ -162,7 +212,7 @@ def demo_health():
         Dependency("model endpoint", True, "READY", "READY"),
         Dependency("tracking API", True, "", "out for delivery"),
         Dependency("policy index", True, "no results", "14 days"),
-        Dependency("memory store", True, "last order PP-1", "PP-1"),
+        Dependency("history store", True, "last order CW-1", "CW-1"),
     ]
     print("dependency      shallow  deep")
     for row in health_table(deps):
@@ -190,12 +240,14 @@ def main():
     tasks = demo_tasks()
     demo_percentiles()
     demo_quality()
+    demo_inc4_replay()
     results, within = demo_sheet(tasks)
     demo_budget()
     demo_burn_arithmetic()
     demo_worked_example()
     demo_time_to_alert()
     demo_blip_and_clear()
+    demo_quiet_night()
     demo_health()
     demo_policy()
     demo_report(results, within)

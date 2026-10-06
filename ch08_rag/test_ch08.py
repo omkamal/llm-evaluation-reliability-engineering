@@ -5,18 +5,19 @@ from datetime import date
 import pytest
 
 from ch05_judge.agreement import cohen_kappa
-from ch08_rag.bm25 import BM25Index, stem, tokens
+from ch08_rag.bm25 import BM25Index, Hit, stem, tokens
 from ch08_rag.calibration import LABELED, agreement, judge_verdicts
 from ch08_rag.chunker import chunk_all, chunk_doc
 from ch08_rag.corpus import ALL_VERSIONS, DOCS, snapshot
-from ch08_rag.generator import ABSTAIN, MODES, answer
+from ch08_rag.generator import ABSTAIN, MODES, Answer, answer
 from ch08_rag.grounding import (citation_problem, correct, groundedness,
                                 supported)
 from ch08_rag.lifecycle import (IndexRegistry, build_index, find_conflicts,
                                 fingerprint, freshness_alarm, release_gate,
                                 stale_docs)
-from ch08_rag.metrics import (context_precision, evaluate, fact_recall, hit,
-                              recall, reciprocal_rank)
+from ch08_rag.metrics import (best_precision, context_precision, evaluate,
+                              fact_recall, hit, leaks, recall,
+                              reciprocal_rank)
 from ch08_rag.queries import QUERIES
 from ch08_rag.sweep import fact_recall_curve, sweep
 from ch08_rag.tool import lookup_policy
@@ -80,6 +81,21 @@ def test_fifty_labeled_queries_every_label_checked_against_the_documents():
             assert any(fact.lower() in DOC_TEXT[g].lower() for g in q.gold)
 
 
+def test_no_fact_is_credited_from_a_wrong_page():
+    """Fact recall counts a fact wherever it appears; at the chapter's
+    settings every credited fact comes from a right page."""
+    for size in (12, 24, 48, 96):
+        idx = BM25Index(chunk_all(DOCS, size, size // 4))
+        for q in (q for q in QUERIES if q.answerable):
+            hits = idx.search(q.text, k=10)
+            for k in range(1, 11):
+                top = hits[:k]
+                anywhere = fact_recall([h.chunk.text for h in top], q.must)
+                right = fact_recall([h.chunk.text for h in top
+                                     if h.chunk.doc_id in q.gold], q.must)
+                assert anywhere == right, (size, q.id, k)
+
+
 # ---- chunking -----------------------------------------------------------
 def test_chunks_overlap_and_cover_every_word():
     doc = DOCS[0]
@@ -118,6 +134,11 @@ def test_rare_words_count_for_more_than_common_ones(v2):
     assert idx.idf[stem("sunday")] > idx.idf[stem("order")]
 
 
+def test_an_empty_index_is_refused():
+    with pytest.raises(ValueError):
+        BM25Index([])
+
+
 def test_nothing_matching_means_nothing_returned(v2):
     assert v2.bm25.search("Where is your head office?") == []
     assert v2.bm25.search("zzz qqq") == []
@@ -154,7 +175,11 @@ def test_the_metrics_on_a_worked_example():
     assert context_precision(ids, gold, 3) == pytest.approx(1 / 3)
     two = ("returns", "refund-timing")
     assert recall(ids, two, 3) == 1.0 and recall(ids, two, 1) == 0.5
-    assert context_precision([], gold, 3) == 0.0
+    assert context_precision([], gold, 3) is None     # nothing to judge
+    assert recall(ids, (), 3) is None and fact_recall(["x"], ()) is None
+    assert reciprocal_rank(ids, gold, k=2) == 0.0       # MRR@k, not MRR
+    assert best_precision(3, 1) == pytest.approx(1 / 3)
+    assert best_precision(1, 1) == 1.0 and best_precision(0, 2) is None
 
 
 def test_fact_recall_counts_facts_not_documents():
@@ -169,8 +194,9 @@ def test_the_retrieval_numbers_in_the_chapter(v2):
     assert round(r["hit"], 2) == 0.91 and round(r["recall"], 2) == 0.88
     assert round(r["rr"], 2) == 0.78 and round(r["precision"], 2) == 0.45
     assert round(r["facts"], 2) == 0.77
-    lo, hi = r["hit_ci"]
-    assert (round(lo, 2), round(hi, 2)) == (0.82, 0.99)
+    assert round(r["best"], 2) == 0.63 and r["empty"] == 0
+    lo, hi = r["hit_ci"]                        # Wilson, as in Chapter 4
+    assert (round(lo, 2), round(hi, 2)) == (0.79, 0.96)
     missed = [q.id for q in QUERIES if q.answerable and not any(
         h.chunk.doc_id in q.gold for h in v2.bm25.search(q.text, k=3))]
     assert missed == ["Q14", "Q28", "Q29", "Q32"]
@@ -208,12 +234,34 @@ def test_each_failure_mode_is_caught_by_its_check(v2):
     memory = answer(q.text, hits, "memory", q.must)
     assert "30 days" in memory.text
     assert groundedness(memory.text, ctx) == 0 and not correct(memory, q)
+    assert citation_problem(memory, hits) == "cites nothing"
     over = answer(q.text, hits, "overreach", q.must)
     assert groundedness(over.text, ctx) == 0.5
-    assert "does not support" in citation_problem(over, hits)
+    assert citation_problem(over, hits) == "a claim no cited page supports"
     fake = answer(q.text, hits, "fake_citation", q.must)
     assert "not retrieved" in citation_problem(fake, hits)
     assert groundedness(fake.text, ctx) == 1.0     # grounded, badly cited
+
+
+def test_a_correct_answer_from_two_pages_cites_both_validly(v2):
+    q, hits, a = run(v2, "Q44")
+    assert set(a.cites) == {"free-shipping", "address-change"}
+    assert correct(a, q) and citation_problem(a, hits) is None
+
+
+def test_a_citation_that_backs_no_claim_is_caught(v2):
+    q, hits, a = run(v2, "Q01")
+    padded = Answer(a.text, a.cites + ("refund-timing",))
+    assert "refund-timing" in {h.chunk.doc_id for h in hits}
+    assert citation_problem(padded, hits) == "refund-timing supports no claim"
+
+
+def test_fake_citation_still_works_when_every_page_was_retrieved():
+    index = build_index("all", DOCS, TODAY, size=96, overlap=24)
+    hits = [Hit(c, 1.0) for c in index.bm25.chunks]   # k = corpus size
+    assert {h.chunk.doc_id for h in hits} == {d.id for d in DOCS}
+    fake = answer("refund", hits, "fake_citation", ("refund",))
+    assert citation_problem(fake, hits).endswith("was not retrieved")
 
 
 # ---- the triage ---------------------------------------------------------
@@ -227,6 +275,16 @@ def test_triage_assigns_each_wrong_answer_to_one_owner(v1, v2):
     assert diagnose(*run(v2, "Q05", "memory"), CURRENT) == "ok"
     assert diagnose(*run(v1, "Q25"), CURRENT) == "source fault"      # stale
     assert diagnose(*run(v2, "Q25"), CURRENT) == "ok"
+
+
+def test_a_reader_distracted_by_clutter_is_a_generation_fault(v2):
+    q, hits, _ = run(v2, "Q01")
+    ctx = [h.chunk.text for h in hits]
+    assert fact_recall(ctx, q.must) == 1        # the fact was in the prompt
+    wrong = Answer("If you have not seen the refund after that, ask Relay "
+                   "to check the status of your return.", ("refund-timing",))
+    assert groundedness(wrong.text, " ".join(ctx)) == 1.0   # faithful ...
+    assert diagnose(q, hits, wrong, CURRENT) == "generation fault"  # ...
 
 
 def test_a_right_answer_for_the_wrong_reason_is_flagged(v2):
@@ -253,10 +311,19 @@ def test_the_triage_tally_in_the_chapter(v2):
 # ---- chunk size ---------------------------------------------------------
 def test_the_chunk_size_sweep_in_the_chapter():
     rows = {size: s for size, _, s in sweep(DOCS, QUERIES, [12, 24, 48, 96])}
-    assert [round(rows[s]["facts"], 2) for s in rows] == [0.34, 0.72, 0.77, 0.94]
+    assert [round(rows[s]["facts"], 2) for s in rows] == [0.34, 0.70, 0.77, 0.92]
     assert [round(rows[s]["recall"], 2) for s in rows] == [0.83, 0.89, 0.88, 0.92]
     assert [round(rows[s]["words"]) for s in rows] == [34, 64, 116, 163]
     assert [round(rows[s]["precision"], 2) for s in rows] == [0.51, 0.50, 0.45, 0.36]
+    # precision falls mostly because its ceiling falls: k = 3 whole pages
+    assert [round(rows[s]["best"], 2) for s in rows] == [0.97, 0.91, 0.63, 0.39]
+
+
+def test_at_the_same_number_of_words_the_gap_mostly_closes():
+    small = evaluate(BM25Index(chunk_all(DOCS, 24, 6)), QUERIES, k=8)
+    large = evaluate(BM25Index(chunk_all(DOCS, 96, 24)), QUERIES, k=3)
+    assert (round(small["words"]), round(large["words"])) == (158, 163)
+    assert (round(small["facts"], 2), round(large["facts"], 2)) == (0.86, 0.92)
 
 
 def test_the_curves_behind_the_figure():
@@ -264,7 +331,9 @@ def test_the_curves_behind_the_figure():
     large = fact_recall_curve(DOCS, QUERIES, 96)
     assert small == sorted(small) and large == sorted(large)   # more k, no loss
     assert all(big >= little for big, little in zip(large, small))
-    assert [round(v, 2) for v in (small[2], large[2])] == [0.72, 0.94]
+    assert [round(v, 2) for v in (small[2], large[2])] == [0.70, 0.92]
+    assert [round(v, 2) for v in (small[0], small[-1])] == [0.44, 0.90]
+    assert [round(v, 2) for v in (large[0], large[-1])] == [0.64, 0.98]
 
 
 # ---- freshness and the index lifecycle ----------------------------------
@@ -286,6 +355,22 @@ def test_any_edit_changes_the_fingerprint_even_without_a_version_bump(v2):
 def test_a_document_missing_from_the_index_is_reported():
     partial = build_index("p", [d for d in DOCS if d.id != "returns"], TODAY)
     assert "returns: missing from the index" in stale_docs(partial, DOCS)
+
+
+def test_a_page_deleted_at_source_but_still_indexed_is_reported(v2):
+    retired = [d for d in DOCS if d.id != "refund-approval"]
+    assert stale_docs(v2, retired) == [
+        "refund-approval: in the index, deleted at source"]
+    assert freshness_alarm(v2, retired, TODAY) != []
+    top = v2.bm25.search("Do large refunds need a person?", k=1)
+    assert top[0].chunk.doc_id == "refund-approval"     # still served
+
+
+def test_the_gate_blocks_a_rechunk_that_keeps_hits_but_loses_facts(v2):
+    rechunk = build_index("v4", DOCS, TODAY, size=12, overlap=3)
+    ok, why = release_gate(rechunk, v2, DOCS, QUERIES)
+    assert not ok
+    assert why == ["fact recall@3 fell from 0.77 to 0.34"]   # hit rate held
 
 
 def test_the_release_gate_passes_a_good_reindex_and_blocks_a_bad_one(v1, v2):
@@ -316,6 +401,27 @@ def test_two_versions_of_one_document_in_a_context_are_a_conflict():
     assert find_conflicts(clean.bm25.search("Is shipping free?", k=3)) == []
 
 
+# ---- access: who may read which page --------------------------------------
+STAFF_ONLY = replace(DOCS[6], id="staff-refunds", title="Staff refunds",
+                     text="Staff may approve a refund of up to $500 for a "
+                     "large order without a second person.")
+
+
+def test_the_access_filter_works_inside_the_search_not_after():
+    index = build_index("acl", DOCS + [STAFF_ONLY], TODAY)
+    customer = {d.id for d in DOCS}           # may not read staff pages
+    query = "Who can approve a large refund of $500?"
+    unfiltered = [h.chunk.doc_id for h in index.bm25.search(query, k=3)]
+    assert leaks(unfiltered, customer) == ["staff-refunds"]      # a leak
+    inside = index.bm25.search(query, k=3, allowed=customer)
+    assert leaks([h.chunk.doc_id for h in inside], customer) == []
+    assert len(inside) == 3                   # k readable chunks
+    after = [d for d in unfiltered if d in customer]
+    assert len(after) < 3                     # filtering late loses slots
+    tool = lookup_policy(index, query, allowed=customer)
+    assert all(not c["id"].startswith("staff") for c in tool["chunks"])
+
+
 # ---- empty retrieval and the tool ----------------------------------------
 def test_a_score_floor_trades_missed_abstentions_for_false_ones(v2):
     unans = [q for q in QUERIES if not q.answerable]
@@ -342,6 +448,8 @@ def test_lookup_policy_reports_status_and_the_index_version(v1, v2):
 def test_the_groundedness_check_against_human_labels():
     a = agreement()
     assert (a["tp"], a["fp"], a["fn"], a["tn"]) == (13, 5, 2, 6)
+    lo, hi = a["kappa_ci"]           # 26 labels: far too wide to gate on
+    assert (round(lo, 2), round(hi, 2)) == (0.05, 0.76)
     assert round(a["tpr"], 2) == 0.87 and round(a["tnr"], 2) == 0.55
     assert round(a["kappa"], 2) == 0.43
     human = [h for *_, h in LABELED]
@@ -408,11 +516,14 @@ def test_the_demo_prints_what_the_chapter_shows(capsys):
     from ch08_rag.demo import main
     main()
     out = capsys.readouterr().out
-    for line in ("hit rate@3         0.91  (95% interval 0.82 to 0.99)",
+    for line in ("hit rate@3         0.91  (95% interval 0.79 to 0.96)",
+                 "context precision  0.45  (best possible 0.63)",
                  "Q03 reciprocal rank 0.33",
                  "diagnosis: source fault",
                  "gate v3: BLOCK",
+                 "gate v4, 12-word chunks: BLOCK",
                  "live: v2 | after roll back: v1",
-                 "TPR 0.87, TNR 0.55, kappa 0.43"):
+                 "TPR 0.87, TNR 0.55, kappa 0.43 (95% interval 0.05 to "
+                 "0.76)"):
         assert line in out.splitlines()
     assert max(len(line) for line in out.splitlines()) <= 74

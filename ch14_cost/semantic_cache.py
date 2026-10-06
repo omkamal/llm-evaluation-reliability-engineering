@@ -12,7 +12,10 @@ from dataclasses import dataclass
 STOP = {"a", "an", "the", "is", "are", "do", "does", "i", "my", "me",
         "can", "to", "of", "it", "what", "how", "when", "after", "for"}
 NEGATIONS = {"not", "no", "never", "cannot", "without"}
-NEVER_STORED = {"lookup_order"}    # an answer that read a customer's data
+# an allowlist: only answers built from public policy are stored; any
+# other tool may have read a customer's data
+CACHEABLE_TOOLS = {"lookup_policy"}
+NEVER_STORED = {"lookup_order"}    # kept for old imports; see store()
 
 
 def embed(text):
@@ -50,8 +53,8 @@ class SemanticCache:
         self.entries, self.dropped = [], 0
 
     def store(self, scope, question, answer, sources, tools=()):
-        """Keep an answer, unless it was built from a customer's data."""
-        if set(tools) & NEVER_STORED:
+        """Keep an answer only if every tool behind it is public."""
+        if not set(tools) <= CACHEABLE_TOOLS:
             return False
         self.entries.append(Entry(scope, question, answer, sources))
         return True

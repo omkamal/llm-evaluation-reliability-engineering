@@ -1,4 +1,5 @@
 """Catch an agent that repeats itself: a step cap plus repeated-action detection."""
+import json
 from collections import Counter
 
 MAX_STEPS = 12          # hard cap on steps per task
@@ -11,7 +12,7 @@ class LoopGuard:
 
     def check(self, tool, args):
         self.steps += 1
-        key = (tool, tuple(sorted(args.items())))
+        key = (tool, json.dumps(args, sort_keys=True))  # lists too
         self.seen[key] += 1
         if self.steps > MAX_STEPS:
             raise RuntimeError(f"step cap hit after {MAX_STEPS} steps")

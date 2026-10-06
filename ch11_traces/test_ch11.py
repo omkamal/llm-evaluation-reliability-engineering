@@ -19,7 +19,8 @@ from ch11_traces.cost import steady_gb, structure_bytes, text_bytes
 from ch11_traces.debug import shrink
 from ch11_traces.evals import (calls_from_trace, failing_traces, link_judge,
                                trace_to_case)
-from ch11_traces.health import edge_hook, health, orphans, personal_misses
+from ch11_traces.health import (health, orphans, personal_misses,
+                                redacting_export)
 from ch11_traces.relay_run import (ORDER, WINDOW, Crew, answer_run,
                                    flat_run, loop_run, nightly_batch,
                                    run_batch)
@@ -199,8 +200,34 @@ def test_the_flat_trace_is_41_siblings_and_collapses_to_one_line():
     assert sum(s.parent_id == root.span_id for s in spans) == 41
     assert {s.kind for s in spans} == {"request", "llm"}   # no agent, no plan
     lines = render_tree(spans)
-    assert lines[2].strip().startswith("chat a-large-v2 x41")
+    assert lines[1] == "conversation  425.11s"
+    assert lines[2] == "  chat a-large-v2 x41  45.43s"
     assert len(render_tree(spans, collapse=False)) == 43
+
+
+def turns_of(calls):
+    """Group model calls into turns: a gap of over a second is the
+    customer typing."""
+    turns = [[calls[0]]]
+    for before, after in zip(calls, calls[1:]):
+        if after.start - before.end > 1:
+            turns.append([])
+        turns[-1].append(after)
+    return turns
+
+
+def test_every_turn_of_the_flat_conversation_is_fast():
+    """INC-4 was quiet: each turn answered well inside the 8 s that
+    tail sampling calls slow, so latency could not raise the alarm."""
+    clock, tracer = fresh(5)
+    flat_run(tracer, clock)
+    calls = sorted((s for s in tracer.finished if s.kind == "llm"),
+                   key=lambda s: s.start)
+    turns = turns_of(calls)
+    seconds = [t[-1].end - t[0].start for t in turns]
+    assert [len(t) for t in turns] == [4] * 9 + [5]
+    assert 3.7 < min(seconds) and max(seconds) < 6.1
+    assert max(seconds) < sampling.SLOW_SECONDS
 
 
 def test_the_researcher_is_a_child_of_the_planner():
@@ -364,7 +391,7 @@ def test_a_failing_trace_becomes_a_case_that_fails_v2_and_passes_v1():
     clock, tracer = fresh()
     root, call = answer_run(tracer, clock,
                             "How long do I have to return a jacket?", "v2")
-    case = trace_to_case(root, "returns", r"14 days", r"30 days", "R-31")
+    case = trace_to_case(root, "returns", r"14 days", r"30 days", "R-32")
     assert case["question"] == "How long do I have to return a jacket?"
     assert case["source"] == "trace" and case["trace_id"] == root.trace_id
     assert grade(case, call.attributes["relay.response.text"])[0] is False
@@ -411,8 +438,8 @@ def test_head_keep_is_deterministic_and_roughly_the_rate():
     assert sampling.head_keep("f" * 32, 0.10) is False
 
 
-def test_the_edge_hook_cleans_free_text_but_cannot_find_names():
-    clock, tracer = fresh(on_end=edge_hook(redact))
+def test_the_edge_redactor_cleans_free_text_but_cannot_find_names():
+    clock, tracer = fresh(export=redacting_export(redact))
     for text in ("for anna.keller@example.com",
                  "for Hannelore Vogt, Lindenstrasse 12"):
         with tracer.span("retrieval", "retrieval",
@@ -427,6 +454,57 @@ def test_the_edge_hook_cleans_free_text_but_cannot_find_names():
     assert "ORD-004829" in first.attributes["relay.tool.args"]
 
 
+def test_tool_arguments_are_redacted_and_identifiers_stay():
+    """A ticket's description is free text inside the tool arguments:
+    the old hook cleaned only `.text` keys and stored the email."""
+    clock, tracer = fresh(export=redacting_export(redact))
+    args = {"order_id": ORDER,
+            "description": "customer anna.keller@example.com: parcel lost"}
+    with tracer.span("execute_tool create_ticket", "tool", attrs={
+            "gen_ai.tool.name": "create_ticket",
+            "relay.tool.args": json.dumps(args, sort_keys=True)}):
+        pass
+    stored = json.loads(tracer.finished[0].attributes["relay.tool.args"])
+    assert stored == {"order_id": ORDER,
+                      "description": "customer <EMAIL_1>: parcel lost"}
+    assert personal_misses(tracer.finished, redact) == 0
+
+
+def test_event_details_are_redacted_too():
+    clock, tracer = fresh(export=redacting_export(redact))
+    with pytest.raises(ValueError):
+        with tracer.span("execute_tool create_ticket", "tool"):
+            raise ValueError("bad contact anna.keller@example.com")
+    stored = tracer.finished[0]
+    assert stored.events[0][2]["message"] == "bad contact <EMAIL_1>"
+    assert personal_misses(tracer.finished, redact) == 0
+
+
+def test_redaction_stores_a_copy_and_leaves_the_live_span_alone():
+    """An exporter wrapper works on what it sends, not on the span: the
+    only place redaction can work once a span has ended."""
+    clock, tracer = fresh(export=redacting_export(redact))
+    with tracer.span("retrieval", "retrieval", attrs={
+            "gen_ai.retrieval.query.text": "for anna.keller@example.com"}
+                     ) as live:
+        pass
+    stored = tracer.finished[0]
+    assert stored is not live and stored.span_id == live.span_id
+    assert live.attributes["gen_ai.retrieval.query.text"].endswith(
+        "example.com")
+    assert stored.attributes["gen_ai.retrieval.query.text"] == (
+        "for <EMAIL_1>")
+
+
+def test_a_skipped_redactor_is_what_personal_misses_counts():
+    clock, tracer = fresh()                    # no redaction at all
+    with tracer.span("execute_tool create_ticket", "tool", attrs={
+            "relay.tool.args": json.dumps(
+                {"description": "mail anna.keller@example.com"})}):
+        pass
+    assert personal_misses(tracer.finished, redact) == 1
+
+
 def test_an_order_id_in_a_structured_key_is_not_a_personal_miss():
     clock, tracer = fresh()
     Crew(tracer, clock).run("conv-1")
@@ -434,7 +512,7 @@ def test_an_order_id_in_a_structured_key_is_not_a_personal_miss():
 
 
 def test_health_of_a_fleet_with_known_defects():
-    clock, tracer = fresh(on_end=edge_hook(redact))
+    clock, tracer = fresh(export=redacting_export(redact))
     spans = run_batch(tracer, clock, 100)
     h = health(spans, redact)
     assert h["conversations"] == 100 and h["spans"] == 1_295
@@ -445,7 +523,7 @@ def test_health_of_a_fleet_with_known_defects():
 
 
 def test_a_clean_fleet_is_perfectly_healthy():
-    clock, tracer = fresh(on_end=edge_hook(redact))
+    clock, tracer = fresh(export=redacting_export(redact))
     crew = Crew(tracer, clock)
     for i in range(5):
         crew.run(f"conv-{i}")
@@ -473,6 +551,14 @@ def test_the_worked_cost_estimate():
     assert steady_gb(tasks, 1, structure + text, 90) == pytest.approx(
         422.3, abs=0.05)
     assert steady_gb(tasks, 1, structure, 90) == pytest.approx(15.3, abs=0.05)
+    # the tiered rule, in the chapter's words: 1.8 GB + 4.6 GB = 6.3 GB
+    kept, cause = 0.116, 0.072
+    assert steady_gb(tasks, kept, structure, 90) == pytest.approx(
+        1.8, abs=0.05)
+    assert steady_gb(tasks, cause, text, 14) == pytest.approx(4.6, abs=0.05)
+    assert (steady_gb(tasks, kept, structure, 90)
+            + steady_gb(tasks, cause, text, 14)) == pytest.approx(6.3,
+                                                                  abs=0.05)
 
 
 def test_describe_prints_every_attribute_and_event():
@@ -502,7 +588,9 @@ def test_the_demo_runs_and_prints_the_headline_numbers(capsys):
                  "attribute coverage  95%",
                  "personal data found in stored spans: 4",
                  "26 turns shrink to 5, plus the system prompt:",
-                 "keep everything, text, 90 days:   422.3 GB"):
+                 "keep everything, text, 90 days:   422.3 GB",
+                 'stored: {"description": "lost; <EMAIL_1>", '
+                 '"order_id": "ORD-004829"}'):
         assert line in out
 
 

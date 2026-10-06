@@ -24,8 +24,15 @@ def review(state: Case):
     entered.append("review")     # runs again on resume: keep it harmless
     packet = {"proposed": state["call"], "why": "above the $50 line"}
     answer = interrupt(packet)   # pauses here; the state is saved
-    return {"decision": answer["decision"],
-            "call": answer.get("call", state["call"])}
+    decision = str(answer["decision"]).strip().lower()
+    call = dict(state["call"])   # the resume may change the amount only
+    if decision == "edit":
+        if not 0 < answer["amount_cents"] <= call["amount_cents"]:
+            raise ValueError("an edit may only lower the amount")
+        call["amount_cents"] = answer["amount_cents"]
+    elif decision not in ("approve", "reject"):
+        raise ValueError(f"unknown decision {decision!r}")
+    return {"decision": decision, "call": call}
 
 
 def act(state: Case):
@@ -45,8 +52,7 @@ print("paused:", paused["__interrupt__"][0].value["why"])
 print("sent so far:", paused.get("done"), "| next node:",
       app.get_state(config).next)
 
-edited = dict(call, amount_cents=2_500)
-done = app.invoke(Command(resume={"decision": "edit", "call": edited}),
-                  config)
+done = app.invoke(Command(resume={"decision": "edit",
+                                  "amount_cents": 2_500}), config)
 print("after resume:", done["done"])
 print("review node started", len(entered), "times")

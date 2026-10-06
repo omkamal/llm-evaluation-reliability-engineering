@@ -44,6 +44,12 @@ class Change:
     eval_run: str            # id of the eval run that passed (Chapter 15)
 
 
+def second_pair(approver, author):
+    """Someone, and someone else: "Sam" may not approve "sam"."""
+    who = approver.strip().lower()
+    return bool(who) and who != author.strip().lower()
+
+
 def apply_change(items, change, log, today):
     """Return the new inventory, or raise: no why, no gate, no 2nd pair
     of eyes, no change. Every applied change leaves an audit record."""
@@ -51,7 +57,7 @@ def apply_change(items, change, log, today):
         raise ValueError("a change needs a reason")
     if not change.eval_run:
         raise ValueError("a change needs a passing eval run")
-    if change.approver == change.author:
+    if not second_pair(change.approver, change.author):
         raise ValueError("the approver must be someone else")
     out, hit = [], False
     for item in items:

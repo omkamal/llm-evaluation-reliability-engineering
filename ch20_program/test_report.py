@@ -9,6 +9,7 @@ import pytest
 from ch12_slos import demo as ch12_demo
 from ch19_incidents.demo import inc6_clock
 from ch19_incidents.timeline import durations
+from ch20_program import demo
 from ch20_program import relay_data as rd
 from ch20_program.findings import (Finding, closed_share, mix, overdue,
                                    without_case)
@@ -24,6 +25,9 @@ def test_the_learning_review_numbers():
     assert [(x.owner, late) for x, late in overdue(f, TODAY)] == [
         ("Lena", 3), ("Priya", 130)]
     assert [x.source for x in without_case(f)] == ["game day"]
+    # the near miss's check started today, which is why Jonas was
+    # still on the sheet on Monday morning
+    assert f[6].case.endswith("from 5 Oct") and TODAY.weekday() == 0
 
 
 def test_a_finding_due_today_is_not_overdue():
@@ -40,11 +44,18 @@ def test_the_inc6_actions_agree_with_chapter_19():
 def test_the_report_refuses_a_number_without_a_basis():
     with pytest.raises(ValueError):
         render("t", [("h", [Line("saved $9,000", "")])])
+    with pytest.raises(ValueError):
+        render("t", [("h", [Line("saved $9,000", "guess")])])
+
+
+def test_an_unlabelled_line_is_refused_not_taken_as_measured():
+    with pytest.raises(ValueError, match="no basis for: ROI"):
+        render("t", [("h", [Line("ROI: 400% in year one.")])])
 
 
 def test_the_report_labels_assumptions():
     text = "\n".join(render("t", [("h", [
-        Line("a fact"), Line("a guess", "assumed")])]))
+        Line("a fact", "measured"), Line("a guess", "assumed")])]))
     assert "a fact\n" in text + "\n" and "a guess (assumed)" in text
 
 
@@ -63,7 +74,15 @@ def test_the_incident_clock_matches_chapter_19():
 
 
 def test_time_at_risk_if_it_came_back():
-    assert 5 + 2 == 7 and 38 + 30 == 68
+    # Chapter 19: declared in 5 (assumed) plus the 2-minute runbook
+    _, marks = inc6_clock()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        demo.demo_report()
+    text = " ".join(out.getvalue().split())
+    pin = durations(marks)["message to pin"]
+    assert f"7 minutes open, not {pin}. Declared in 5" in text
+    assert "Pages: 13, 9 at night" in text
 
 
 def test_the_report_numbers_agree_with_chapter_12():

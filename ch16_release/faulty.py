@@ -8,6 +8,7 @@ Chapter 10's `VirtualClock`, so 2,000 chats take no real time.
 import random
 from collections import deque
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from ch09_when_calls_fail.budget import RetryBudget
 from ch10_providers.fakes import FULL, stream
@@ -69,7 +70,8 @@ class Run:
     chats: int = 0
     failed: list = field(default_factory=list)       # chat numbers
     quick: int = 0                                   # first token in 2 s
-    ran_from_partial: int = 0
+    drafts: int = 0             # partial tool calls held back, never run
+    ran_from_partial: int = 0   # tool calls run from an unfinished stream
     injected: dict = field(default_factory=dict)
     aborted: str = ""
 
@@ -86,45 +88,45 @@ class Run:
         return self.availability >= TARGET and self.ran_from_partial == 0
 
 
-async def attempt(provider):
-    """'ok', 'retry' (transient), 'cut' or 'bad_json'."""
+async def attempt(provider, run=None):
+    """'ok', 'retry' (a 429 or a stall), 'cut' or 'bad_json'."""
     try:
         res = await provider.chat()
     except RateLimited:
         return "retry"
+    if run is not None:
+        run.drafts += bool(res.partial_tool)
+        if res.tool_call is not None:          # the only way a tool runs
+            run.ran_from_partial += res.status != "complete"
     if res.status == "complete":
         return "ok"
     return {"stalled": "retry", "cut": "cut"}.get(res.why, res.why)
 
 
 def run_experiment(n=2000, failover=False, seed=7, faults=FAULTS,
-                   slow=0.02, abort_below=None):
-    """Send `n` chats through Relay's defences with faults injected."""
+                   slow=0.02, stop_after=None):
+    """Send `n` chats through Relay's defences with faults injected.
+
+    A failed call of any kind (a 429, a stall, a cut stream, broken
+    JSON) gets at most two more tries, and each one is paid from
+    Chapter 9's retry budget: Chapter 2 counts a repair against it too.
+    """
     clock = VirtualClock()
     primary = FaultyProvider(clock, faults, seed, slow)
     backup = FaultyProvider(clock, BACKUP_FAULTS, seed + 4)
     budget, run = RetryBudget(), Run()
 
-    async def with_retry():
-        for tries in range(3):
-            got = await attempt(primary)
-            if got != "retry":
-                return got
-            if tries == 2 or budget.tokens < 1:
-                break                         # out of tries or budget
-            budget.tokens -= 1
-        if failover:                          # the fix run 1 pointed to
-            got = await attempt(backup)
-            return None if got == "retry" else got
-        return None
-
     async def chat():
         budget.record_request()
-        got = await with_retry()
-        if got == "cut":                      # the partial call is dropped
-            got = await with_retry() if budget.tokens >= 1 else None
-            got = None if got == "cut" else got
-        return got is not None                # bad JSON: repaired once
+        for tries in range(3):
+            if await attempt(primary, run) == "ok":
+                return True
+            if tries == 2 or budget.tokens < 1:
+                break                         # out of tries or budget
+            budget.tokens -= 1                # a retry or a repair
+        if failover:                          # the fix run 1 pointed to
+            return await attempt(backup, run) == "ok"
+        return False
 
     async def main():
         recent = deque(maxlen=50)
@@ -139,12 +141,18 @@ def run_experiment(n=2000, failover=False, seed=7, faults=FAULTS,
                       + backup.first_tokens[seen_b:])
             run.quick += bool(firsts) and min(firsts) - started <= 2.0
             recent.append(ok)
-            if (abort_below and len(recent) == 50
-                    and sum(recent) / 50 < abort_below):
-                run.aborted = (f"availability {sum(recent) / 50:.0%} "
-                               "over the last 50 chats")
+            if stop_after and recent.count(False) >= stop_after:
+                run.aborted = f"{stop_after} failed chats within 50"
                 return                         # the stop condition
 
     clock.run(main())
     run.injected = dict(primary.injected)
     return run
+
+
+@lru_cache(maxsize=None)
+def seed_check(seeds=10):
+    """Failed chats per seed for both setups: one seed is one draw."""
+    return tuple((len(run_experiment(seed=s).failed),
+                  len(run_experiment(seed=s, failover=True).failed))
+                 for s in range(seeds))

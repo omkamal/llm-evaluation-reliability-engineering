@@ -2,6 +2,7 @@
 import textwrap
 from dataclasses import replace
 from datetime import date
+from statistics import median_low
 
 from ch12_slos.budget import error_budget
 from common.clock import FakeClock
@@ -9,7 +10,7 @@ from ch16_release.bundle import (Registry, changed_parts, drift,
                                  make_bundle)
 from ch16_release.canary import Canary, budget_at_risk
 from ch16_release.capstone import month_left, start, upgrade
-from ch16_release.faulty import run_experiment
+from ch16_release.faulty import run_experiment, seed_check
 from ch16_release.lifecycle import migration_plan, notice_days
 from ch16_release.policy import Change, release_check
 from ch16_release.relay_parts import PROMPT_V14, PROMPT_V15, contents
@@ -75,15 +76,20 @@ def demo_canary():
     print(f"{burn.minutes} minutes at 8% errors: {small} failed chats at "
           f"5%, {big} at 100%")
     print(f"share of the {allowed:,}-chat error budget: "
-          f"{small / allowed:.1%} against {big / allowed:.1%}")
-    runs = [Canary(CONTROL, CONTROL, FakeClock(), seed=s).run(limit=480)
-            for s in range(10)]
+          f"{small / allowed:.2%} against {big / allowed:.1%}")
+    runs = [Canary(CONTROL, CONTROL, FakeClock(), seed=s).run()
+            for s in range(50)]
     rolled = sum(r.decision == "rolled back" for r in runs)
-    print(f"control against itself, 10 seeds: {rolled} rolled back")
+    middle = median_low(r.minutes for r in runs
+                        if r.decision == "promoted")
+    print(f"control against itself, 50 seeds: {rolled} rolled back, "
+          f"median minute {middle}")
 
 
 def demo_faulty():
     print("== rehearse failure: 2,000 chats, faults on")
+    names = {"rate_limited": "rate limits", "timeout": "stalls",
+             "stream_cut": "cut streams", "bad_json": "broken JSON"}
     for label, failover in (("run 1", False),
                             ("run 2, failover to B", True)):
         run = run_experiment(failover=failover)
@@ -91,13 +97,20 @@ def demo_faulty():
         print(f"{label}: {run.availability:.1%} available "
               f"({len(run.failed)} of {run.chats:,} failed): {verdict}")
         print(f"  first token within 2 s: {run.first_token_rate:.1%}; "
-              f"partial-JSON tool calls run: {run.ran_from_partial}")
+              f"partial tool calls: {run.drafts} held, "
+              f"{run.ran_from_partial} run")
         if not failover:
-            print("  injected:", ", ".join(
-                f"{k} {v}" for k, v in run.injected.items()))
+            print("  faults dealt:", ", ".join(
+                f"{v} {names[k]}" for k, v in run.injected.items()))
+    checks = seed_check()
+    ones, twos = [a for a, _ in checks], [b for _, b in checks]
+    broke = [sum(f > 10 for f in fails) for fails in (ones, twos)]
+    print(f"{len(checks)} seeds: run 1 broke it in {broke[0]} "
+          f"({min(ones)} to {max(ones)} failed), run 2 in {broke[1]} "
+          f"({min(twos)} to {max(twos)})")
     stress = run_experiment(faults={"rate_limited": 0.30, "timeout": 0.02},
-                            abort_below=0.9)
-    print(f"abort at chat {stress.chats}: {stress.aborted}")
+                            stop_after=3)
+    print(f"stop at chat {stress.chats}: {stress.aborted}")
 
 
 def demo_policy():
@@ -116,7 +129,7 @@ def demo_bundle():
     old = make_bundle("R-117", contents(PROMPT_V14, "a-large-v1",
                       "prompt v14"), "Relay-60 v3", "judge v2")
     new_parts = contents(PROMPT_V15, "a-large-v2", "prompt v15")
-    new = make_bundle("R-118", new_parts, "Relay-60 v3", "judge v2")
+    new = make_bundle("R-119", new_parts, "Relay-60 v3", "judge v2")
     print(f"{old.id} fingerprint {old.fingerprint()}")
     for part, (label, short) in old.parts.items():
         print(f"  {part:<8}{label:<20}{short}")
@@ -139,7 +152,7 @@ def demo_lifecycle():
     print("== a retirement notice")
     days = notice_days(date(2026, 9, 30), date(2026, 11, 30))
     print(f"notice 30 Sep, retirement 30 Nov: {days} days")
-    for day, step in migration_plan(60):
+    for day, step in migration_plan(days):
         print(f"day {day:>2}: {step}")
     print("== the scorecard (invented numbers, 200 cases)")
     v2_cost = api_cost(4.6, 5000)
@@ -157,13 +170,13 @@ def demo_lifecycle():
     print(f"choice: {choose(candidates).name}")
     print("== build or buy")
     even = breakeven_tasks(fixed, v2_cost, 0.004)
-    print(f"break-even: {even:,.0f} tasks a month; ParcelPath runs "
+    print(f"break-even: {even:,.0f} tasks a month; Crateway runs "
           f"about 900,000")
 
 
 def demo_capstone():
     allowed = error_budget(0.995, 1_000_000)
-    print(f"error budget this month: {allowed - 1900:,} of {allowed:,} "
+    print(f"error budget, 28 days: {allowed - 1900:,} of {allowed:,} "
           f"failed chats left ({month_left():.0%})")
     for name, stop in (("a-large-v2, prompt v14", False),
                        ("a-large-v2, prompt v15", True)):
@@ -171,7 +184,7 @@ def demo_capstone():
         registry = start()
         rungs, result = upgrade(name, month_left(), registry, stop)
         for r in rungs:
-            line = f"{r.name:<13}{'pass' if r.passed else 'STOP':<5}{r.detail}"
+            line = f"{r.name:<13}{r.says:<5}{r.detail}"
             print(textwrap.fill(line, 74, subsequent_indent=" " * 18))
         print(f"live bundle: {registry.live.id}")
         if result and result.decision == "promoted":

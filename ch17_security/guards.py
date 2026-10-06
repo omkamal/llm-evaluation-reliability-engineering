@@ -1,14 +1,17 @@
 """The guard chain: cheap, deterministic layers first; a model-based
 screen, if you run one, comes last. Each layer returns None (no opinion)
-or a Decision. The first deny wins."""
+or a Decision. The first deny wins, and an allow needs a rule."""
+import json
+from collections import Counter
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
+from ch02_trust_outputs.idem import Payments, RefundService
 from ch02_trust_outputs.refund import RefundArgs
 from ch10_providers.tiers import ActionBlocked, guard_tool
 from ch17_security.policy import RULES
-from ch17_security.world import new_orders
+from ch17_security.world import TODAY, new_orders
 
 
 @dataclass(frozen=True)
@@ -31,10 +34,13 @@ def service_tier(call, ctx):
 
 
 def well_formed(call, ctx):
-    if call.name != "issue_refund":
-        return None
-    try:                          # Chapter 2's schema: extra fields fail
-        RefundArgs.model_validate(call.args)
+    rule = RULES.get(call.name)
+    if rule is None:
+        return None               # the belt's business
+    if rule.args is None:
+        return Decision("deny", "schema", "no schema for this tool")
+    try:      # every tool: strict, and extra fields fail (Chapter 2)
+        rule.args.model_validate_json(json.dumps(call.args))
     except ValidationError as err:
         return Decision("deny", "schema", err.errors()[0]["msg"])
 
@@ -73,9 +79,14 @@ def owner_from_plan(call, ctx):
 
 
 def within_limits(call, ctx):
+    """Limits on the sum, not only on one call: calls per session, the
+    order's total and the customer's day (Chapter 2's ledger)."""
     rule = RULES.get(call.name)
-    cap = rule.auto_cents if rule else 0
-    if not cap:
+    if rule is None:
+        return None
+    if rule.per_session and ctx.used[call.name] >= rule.per_session:
+        return Decision("deny", "limit", "used up for this session")
+    if not rule.auto_cents:
         return None
     try:
         args = RefundArgs.model_validate(call.args)
@@ -87,8 +98,10 @@ def within_limits(call, ctx):
     left = order.total_cents - order.refunded_cents
     if args.amount_cents > left:
         return Decision("deny", "limit", f"max {left} cents")
-    if args.amount_cents > cap:
-        return Decision("approve", "limit", f"above {cap} cents")
+    today = ctx.ledger.paid_today(ctx.session.customer_id)
+    if (args.amount_cents > rule.auto_cents
+            or today + args.amount_cents > rule.day_cents):
+        return Decision("approve", "limit", f"{today} cents paid today")
 
 
 def model_screen(screen):
@@ -119,11 +132,22 @@ class Ctx:
     service_tier: int = 1
     layers: list = field(default_factory=lambda: list(DETERMINISTIC))
     blocked: list = field(default_factory=list)
+    # Chapter 2's RefundService: it pays, books each refund against the
+    # order and the customer's day, and checks both lines again
+    ledger: object = None
+    used: Counter = field(default_factory=Counter)  # calls this session
+    conversation: str = "conv-1"
+
+    def __post_init__(self):
+        if self.ledger is None:
+            self.ledger = RefundService(Payments(), orders=self.orders,
+                                        today=lambda: TODAY)
 
 
 def decide(call, ctx):
     """Run the layers in order; a deny stops the chain, an approve waits
-    for the rest to speak, and silence from every layer means allow."""
+    for the rest to speak, and silence from every layer means allow,
+    but only for a tool that has a rule: the chain fails closed."""
     pending = None
     for layer in ctx.layers:
         found = layer(call, ctx)
@@ -132,4 +156,6 @@ def decide(call, ctx):
         if found.verdict == "deny":
             return found
         pending = pending or found
+    if call.name not in RULES:
+        return Decision("deny", "chain", "no rule for this tool")
     return pending or Decision("allow", "chain", "every layer passed")

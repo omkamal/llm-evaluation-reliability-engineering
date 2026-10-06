@@ -52,7 +52,7 @@ class Outcome:
     final_cents: int         # 0 when rejected
 
     def label(self):
-        """A free expert label: approve is a pass, the rest a fail."""
+        """An expert label: approve is a pass, the rest a fail."""
         return {"case": self.item.packet.case_id,
                 "label": "pass" if self.decision == "approve" else "fail",
                 "proposed": self.item.packet.proposed["args"],
@@ -61,6 +61,9 @@ class Outcome:
 
 class InvalidProposal(Exception):
     pass
+
+
+DECISIONS = ("approve", "edit", "reject")
 
 
 class ReviewDesk:
@@ -85,13 +88,16 @@ class ReviewDesk:
         return heapq.heappop(self.heap)[-1]
 
     def decide(self, item, reviewer, decision, edited_cents=None):
+        decision = str(decision).strip().lower()   # "REJECT" rejects
+        if decision not in DECISIONS:              # never pay by default
+            raise ValueError(f"unknown decision {decision!r}")
         packet = item.packet
         case, tool = packet.case_id, packet.proposed["tool"]
         args = dict(packet.proposed["args"])
         final = 0
         if decision != "reject":
             if decision == "edit":
-                if not 0 < edited_cents <= args["amount_cents"]:
+                if not 0 < (edited_cents or 0) <= args["amount_cents"]:
                     raise ValueError("an edit may only lower the amount")
                 args["amount_cents"] = edited_cents
             customer = item.customer

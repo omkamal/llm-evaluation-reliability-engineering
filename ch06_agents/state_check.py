@@ -2,35 +2,47 @@
 
 check_state() reads only the before and after snapshots of the sandbox.
 It never reads the reply, and it never reads the list of tool calls."""
-from ch06_agents.sandbox import RECORDS
+from ch06_agents.sandbox import LOGS
+
+_GONE = object()        # stands for a record or field that does not exist
 
 
 def changed(before, after):
-    """Every (table, key, field) whose value differs. A record that was
-    created or deleted counts as one change with the field '*'."""
+    """Every (table, key, field) whose value differs. Every table in the
+    snapshot counts except the logs, and every field, new ones included.
+    A record that was created or deleted counts as one change with the
+    field '*'; so does a table that is not a table of records."""
     out = set()
-    for table in RECORDS:
-        for key in before[table].keys() | after[table].keys():
-            old, new = before[table].get(key), after[table].get(key)
-            if old is None or new is None:
-                out.add((table, key, "*"))
-            else:
-                out |= {(table, key, f) for f in old if old[f] != new[f]}
+    for table in (before.keys() | after.keys()) - set(LOGS):
+        old_t, new_t = before.get(table, {}), after.get(table, {})
+        if not (isinstance(old_t, dict) and isinstance(new_t, dict)):
+            if old_t != new_t:
+                out.add((table, "*", "*"))
+            continue
+        for key in old_t.keys() | new_t.keys():
+            old, new = old_t.get(key, _GONE), new_t.get(key, _GONE)
+            if not (isinstance(old, dict) and isinstance(new, dict)):
+                if old != new:              # created, deleted, replaced
+                    out.add((table, key, "*"))
+                continue
+            out |= {(table, key, f) for f in old.keys() | new.keys()
+                    if old.get(f, _GONE) != new.get(f, _GONE)}
     return out
 
 
 def check_state(before, after, exp):
     """Return {check: why} for every broken expectation; {} is a pass."""
     table, key = exp["record"]
-    new = after[table][key]
+    new = after.get(table, {}).get(key) or {}      # deleted: no fields
     seen = changed(before, after)
     bad = {}
     if not any((t, k) == (table, key) for t, k, _ in seen):
         bad["record"] = f"{key} was never changed"
     for field, want in exp["set"].items():           # required fields
-        if new[field] != want:
-            bad.setdefault(
-                "fields", f"{field} is {new[field]!r}, wanted {want!r}")
+        got = new.get(field)                         # None if missing
+        if got != want:
+            bad.setdefault("fields", f"{field} is {got!r}, "
+                                     f"wanted {want!r}")
     wanted = {(table, key, f) for f in exp["set"]}
     if seen - wanted:                                # nothing else moved
         bad["untouched"] = f"also changed {sorted(seen - wanted)[0]}"
@@ -47,8 +59,9 @@ def check_state(before, after, exp):
 def check_untouched(before, after):
     """For a non-trigger case: the world must not have moved at all."""
     bad = {}
-    if changed(before, after):
-        bad["untouched"] = f"changed {sorted(changed(before, after))[0]}"
+    moved = changed(before, after)
+    if moved:
+        bad["untouched"] = f"changed {sorted(moved)[0]}"
     if after["audit_log"]:
         n = len(after["audit_log"])
         bad["audit"] = f"{n} unexpected audit events"

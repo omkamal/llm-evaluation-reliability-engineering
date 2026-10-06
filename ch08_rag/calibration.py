@@ -4,6 +4,7 @@ Each item is (document id, an answer, the human verdict on whether the
 document supports the answer). The labels were written by the author,
 reading the document, before the check was run.
 """
+from ch04_numbers.stats import bootstrap_ci
 from ch05_judge.agreement import cohen_kappa, confusion, tpr_tnr
 from ch08_rag.corpus import DOCS
 from ch08_rag.grounding import groundedness
@@ -63,9 +64,19 @@ def judge_verdicts(labeled=LABELED):
             for doc, answer, _ in labeled]
 
 
+def kappa_interval(judge, human, resamples=10_000, seed=0):
+    """95% bootstrap interval for kappa: resample (judge, human) pairs."""
+    def kappa_of(pairs):
+        j, h = zip(*pairs)
+        return cohen_kappa(j, h)
+    return bootstrap_ci(list(zip(judge, human)), resamples=resamples,
+                        seed=seed, stat=kappa_of)[1]
+
+
 def agreement(labeled=LABELED):
     judge, human = judge_verdicts(labeled), [h for *_, h in labeled]
     tp, fp, fn, tn = confusion(judge, human)
     tpr, tnr = tpr_tnr(judge, human)
     return {"tp": tp, "fp": fp, "fn": fn, "tn": tn, "tpr": tpr,
-            "tnr": tnr, "kappa": cohen_kappa(judge, human)}
+            "tnr": tnr, "kappa": cohen_kappa(judge, human),
+            "kappa_ci": kappa_interval(judge, human)}

@@ -24,7 +24,8 @@ def pass_rate(records):
 
 def monthly_judge_cost(tasks, sample_rate, tokens_in, tokens_out,
                        usd_in_per_m, usd_out_per_m):
-    """Dollars per month to judge a sample of tasks."""
+    """Dollars to judge a sample of the period's chats or tasks (Relay
+    counts its chat layer over 28 days)."""
     judged = tasks * sample_rate
     per_call = (tokens_in * usd_in_per_m
                 + tokens_out * usd_out_per_m) / 1_000_000

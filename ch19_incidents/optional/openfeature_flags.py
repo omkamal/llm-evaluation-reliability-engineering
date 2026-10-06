@@ -24,8 +24,9 @@ def set_flags(kill, bundle, disabled):
 
 def what_runs(client):
     """Every read names its own default, used if the service cannot
-    answer: the normal state, never a half-finished one."""
-    if client.get_boolean_value("relay-kill-switch", False):
+    answer or does not hold the flag: the safe side, so the kill switch
+    defaults to ON and the bundle to the last good one."""
+    if client.get_boolean_value("relay-kill-switch", True):
         return "handoff", LAST_GOOD, []
     bundle = client.get_string_value("relay-bundle", LAST_GOOD)
     off = client.get_object_value("relay-disabled-tools", {"tools": []})

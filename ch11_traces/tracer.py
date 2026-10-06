@@ -81,11 +81,11 @@ def current():
 
 
 class Tracer:
-    def __init__(self, clock, ids=None, sampler=None, on_end=None):
+    def __init__(self, clock, ids=None, sampler=None, export=None):
         self.clock = clock
         self.ids = ids or IdGenerator()
         self.sampler = sampler or (lambda trace_id: True)
-        self.on_end = on_end or (lambda span: None)   # edge hook
+        self.export = export or (lambda span: span)   # what gets stored
         self.finished = []
 
     @contextmanager
@@ -112,9 +112,8 @@ class Tracer:
         finally:
             _current.reset(token)
             sp.end = self.clock.now()
-            if ctx.sampled:
-                self.on_end(sp)
-                self.finished.append(sp)
+            if ctx.sampled:                  # store what export returns
+                self.finished.append(self.export(sp))
 
 
 TRACEPARENT = re.compile(

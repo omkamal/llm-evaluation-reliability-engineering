@@ -5,11 +5,11 @@ from math import log
 
 import pytest
 
-from ch13_drift.relay_sim import (BASE_MIX, SEGMENTS, TOOLS, input_chars,
-                                  tool_calls)
+from ch13_drift.relay_sim import (ACTION_TOOLS, BASE_MIX, SEGMENTS,
+                                  TOOLS, input_chars, tool_calls)
 from ch13_drift.shift import (check_segment, chi2_sf, chi_square,
                               ks_p_value, ks_statistic, limits, psi,
-                              psi_noise_floor, shares)
+                              psi_noise_floor, shares, tool_shares)
 
 
 def test_psi_by_hand():
@@ -41,6 +41,33 @@ def test_segment_psi_matches_figure_13_3():
                    "US email": (0.13, "watch"),
                    "EU chat": (0.18, "watch"),
                    "EU email": (0.31, "shifted")}
+
+
+def test_psi_dilutes_a_big_move_in_one_tool():
+    base, now = tool_calls(SEGMENTS[1])                     # mobile chat
+    assert check_segment(base, now, TOOLS)[1] == "stable"   # PSI 0.07
+    before, after, word = tool_shares(base, now, ACTION_TOOLS)[
+        "reschedule_delivery"]
+    assert (round(before, 3), round(after, 3), word) == (0.182, 0.277,
+                                                         "above")
+    base, now = tool_calls(SEGMENTS[0])                     # web chat
+    before, after, word = tool_shares(base, now, ACTION_TOOLS)[
+        "escalate_to_human"]
+    assert (round(before, 3), round(after, 3), word) == (0.069, 0.105,
+                                                         "above")
+    jump = [0.37 if t == "reschedule_delivery" else s * 0.63 / 0.82
+            for t, s in zip(TOOLS, BASE_MIX)]           # 18% to 37%
+    assert round(psi(BASE_MIX, jump), 2) == 0.19            # only "watch"
+
+
+def test_try_it_2_thin_slices():
+    base, now = tool_calls(SEGMENTS[-1])                    # EU email
+    week = [round(check_segment(base, now[i:i + 300], TOOLS, 50)[0], 2)
+            for i in range(0, 1500, 300)]
+    assert week == [0.47, 0.23, 0.22, 0.30, 0.40]
+    calm = [check_segment(base, base[i:i + 300], TOOLS, 50)[0]
+            for i in range(0, 1500, 300)]
+    assert (round(min(calm), 3), round(max(calm), 3)) == (0.002, 0.021)
 
 
 def test_thin_segments_are_skipped_and_limits_widen():

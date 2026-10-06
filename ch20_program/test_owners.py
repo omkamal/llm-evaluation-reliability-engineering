@@ -91,3 +91,14 @@ def test_exercise_lena_leaves():
         "postmortem actions"]
     assert single_hands(rd.AFTER, roster) == [
         "tool contracts and tiers", "postmortem actions"]
+
+
+def test_a_holiday_puts_items_back_in_one_pair_of_hands():
+    items = [Item("two", ("Ana", "Di"), ("Ana",))]
+    assert single_hands(items, ROSTER) == []
+    assert single_hands(items, ROSTER, count_away=False) == ["two"]
+    # the repaired sheet survives a resignation, not yet Sam's holiday
+    away = single_hands(rd.AFTER, rd.ROSTER, count_away=False)
+    assert len(away) == 8
+    assert "runbook and kill switch" not in away
+    assert len(single_hands(rd.BEFORE, rd.ROSTER, count_away=False)) == 10

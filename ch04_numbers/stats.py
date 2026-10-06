@@ -1,7 +1,8 @@
 """Small statistics for evals, standard library only.
 
-Signatures of mean, pass_at_k, pass_hat_k, proportion_ci, bootstrap_ci
-and paired_bootstrap are shared with later chapters: keep them stable.
+Signatures of mean, pass_at_k, pass_hat_k, proportion_ci, difference_ci,
+wilson_ci, bootstrap_ci, paired_bootstrap and sign_test_p are shared
+with later chapters: keep them stable (add functions, never rename).
 """
 import random
 import statistics
@@ -15,18 +16,29 @@ def mean(xs):
 
 # ---- repeated trials -------------------------------------------------
 
+def check_k(n, k):
+    """k draws from n trials need 1 <= k <= n: refuse, do not guess."""
+    if not 1 <= k <= n:
+        raise ValueError(f"k = {k} needs at least {k} trials, got {n}")
+
+
 def pass_at_k(n, c, k):
     """Chance that at least one of k trials passes (n trials, c passes).
 
     Unbiased estimator from Chen et al. 2021.
     """
+    check_k(n, k)
     if n - c < k:
         return 1.0      # fewer than k failures: any k draws hold a pass
     return 1 - comb(n - c, k) / comb(n, k)
 
 
 def pass_hat_k(n, c, k):
-    """Chance that all k trials pass (n trials, c passes)."""
+    """Chance that all k trials pass (n trials, c passes).
+
+    Unbiased estimator from tau-bench (Yao et al. 2024).
+    """
+    check_k(n, k)
     return comb(c, k) / comb(n, k)
 
 
@@ -45,8 +57,10 @@ def pass_hat_k_rate(p, k):
 def proportion_ci(successes, n, z=1.96):
     """Pass rate, its standard error, and a 95% interval.
 
-    The interval uses the normal approximation: fine in the middle of
-    the range, optimistic near 0 or 1 and with few cases.
+    The interval uses the normal approximation (the Wald interval):
+    fine in the middle of the range with many cases, too narrow near 0
+    or 1 and with few cases (zero width at 30 of 30). Use wilson_ci
+    there; `coverage` measures the difference.
     """
     p = successes / n
     se = sqrt(p * (1 - p) / n)
@@ -65,12 +79,53 @@ def difference_ci(wins_a, n_a, wins_b, n_b, z=1.96):
 
 
 def wilson_ci(successes, n, z=1.96):
-    """A better 95% interval near 0 or 1 (Wilson score interval)."""
+    """A better 95% interval near 0 or 1 (Wilson score interval).
+
+    The default for a pass rate on few cases. `successes` may be a sum
+    of per-case pass rates; the interval then errs on the wide side,
+    because a rate over several trials wobbles less than one verdict.
+    """
     p = successes / n
     centre = (p + z * z / (2 * n)) / (1 + z * z / n)
     half = z * sqrt(p * (1 - p) / n + z * z / (4 * n * n))
     half /= 1 + z * z / n
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+wilson_interval = wilson_ci     # the same function, by its longer name
+
+
+def wilson_difference_ci(wins_a, n_a, wins_b, n_b, z=1.96):
+    """Gap between two pass rates on separate samples, Wilson-based.
+
+    Newcombe's (1998) method: combine each rate's Wilson interval. Use
+    it in place of difference_ci when either rate is near 0 or 1 or
+    either sample is small: 0 of 30 against 0 of 600 then still allows
+    a harm of about 11 points, where difference_ci says (0.0, 0.0).
+    Returns (rate_b - rate_a, (lo, hi)), like difference_ci.
+    """
+    pa, pb = wins_a / n_a, wins_b / n_b
+    lo_a, hi_a = wilson_ci(wins_a, n_a, z)
+    lo_b, hi_b = wilson_ci(wins_b, n_b, z)
+    gap = pb - pa
+    lo = gap - sqrt((pb - lo_b) ** 2 + (hi_a - pa) ** 2)
+    hi = gap + sqrt((hi_b - pb) ** 2 + (pa - lo_a) ** 2)
+    return gap, (lo, hi)
+
+
+def coverage(interval, n, p):
+    """Exact chance that `interval` contains the true rate p.
+
+    `interval(successes, n)` returns (lo, hi). A 95% interval should
+    score about 0.95; the Wald interval at 30 cases and p = 0.95 scores
+    0.78. Every possible count of passes is weighed by its probability.
+    """
+    total = 0.0
+    for wins in range(n + 1):
+        lo, hi = interval(wins, n)
+        if lo <= p <= hi:
+            total += comb(n, wins) * p ** wins * (1 - p) ** (n - wins)
+    return total
 
 
 def clustered_se(values, clusters):
@@ -102,6 +157,34 @@ def bootstrap_ci(values, *, resamples=10_000, alpha=0.05, seed=0,
     lo = stats[int(resamples * alpha / 2)]
     hi = stats[int(resamples * (1 - alpha / 2)) - 1]
     return stat(values), (lo, hi)
+
+
+def cluster_bootstrap_ci(values, clusters, *, resamples=10_000,
+                         alpha=0.05, seed=0):
+    """Percentile bootstrap of the mean that resamples whole clusters.
+
+    When cases come in groups (three phrasings of one topic), drawing
+    single cases counts one piece of evidence three times. Here each
+    draw takes a whole group, so ten topics are ten pieces of evidence.
+    For a paired comparison, pass the per-case differences b - a. With
+    few clusters it runs narrow: on ten topics an A/A check flags a
+    difference about 10 times in 100, not 5.
+    """
+    if len(values) != len(clusters):
+        raise ValueError(f"{len(values)} scores but {len(clusters)} "
+                         "cluster labels: give one label per case")
+    groups = defaultdict(list)
+    for value, cluster in zip(values, clusters):
+        groups[cluster].append(value)
+    groups = list(groups.values())
+    rng = random.Random(seed)
+    g = len(groups)
+    stats = sorted(
+        mean([v for _ in range(g) for v in groups[rng.randrange(g)]])
+        for _ in range(resamples))
+    lo = stats[int(resamples * alpha / 2)]
+    hi = stats[int(resamples * (1 - alpha / 2)) - 1]
+    return mean(values), (lo, hi)
 
 
 def check_same_cases(a, b):
@@ -153,7 +236,10 @@ def paired_vs_unpaired_se(a, b):
 def sign_test_p(better, worse):
     """Exact two-sided p-value if each changed case is a fair coin flip.
 
-    Cases that did not change carry no information and are left out.
+    The p-value is the chance of a split at least this lopsided, in
+    either direction, if the versions were equally good. Cases that did
+    not change carry no information and are left out. With few changed
+    cases (under about twenty), trust it over the paired bootstrap.
     """
     changed = better + worse
     rarer = min(better, worse)

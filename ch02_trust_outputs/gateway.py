@@ -27,15 +27,8 @@ class Gateway:
     def check(self, raw, *, prompt_version, model_version):
         """Return a validated object, or None after quarantining."""
         try:
-            if self.aliases:
-                data = json.loads(raw)
-                mapped = self.aliases.get(data.get("severity"))
-                if mapped:   # explicit, approved, counted
-                    data["severity"] = mapped
-                    self.aliased += 1
-                obj = self.schema.model_validate(data)
-            else:
-                obj = self.schema.model_validate_json(raw)
+            text = self.apply_aliases(raw) if self.aliases else raw
+            obj = self.schema.model_validate_json(text)
         except ValidationError as exc:
             errors = [(".".join(map(str, e["loc"])), e["type"], e["msg"])
                       for e in exc.errors()]
@@ -47,6 +40,16 @@ class Gateway:
         self.quarantine.append(
             Quarantined(raw, errors, prompt_version, model_version))
         return None
+
+    def apply_aliases(self, raw):
+        data = json.loads(raw)
+        if not isinstance(data, dict):     # "[1, 2]", "null", "hello"
+            raise json.JSONDecodeError("not a JSON object", raw, 0)
+        mapped = self.aliases.get(str(data.get("severity")))
+        if mapped:   # explicit, approved, counted
+            data["severity"] = mapped
+            self.aliased += 1
+        return json.dumps(data)
 
     @property
     def quarantine_rate(self):

@@ -2,9 +2,10 @@
 from functools import partial
 
 from ch06_agents.cases import CASES, RELAY_60, T3B
-from ch06_agents.compare import outcomes, paired_change, pass_rate, slices
-from ch06_agents.crew import (Crew, careful_summarizer, lossy_summarizer,
-                              lost_at)
+from ch06_agents.compare import (outcomes, paired_change, pass_rate,
+                                 sign_p, slices)
+from ch06_agents.crew import (Crew, careful_summarizer, eager_researcher,
+                              lossy_summarizer, lost_at, wrong_writers)
 from ch06_agents.evaluate import (passed, reply_ok, run_case,
                                   state_problems)
 from ch06_agents.relays import (VERSIONS, candidate, current,
@@ -112,18 +113,21 @@ def simulated_customer():
 
 def crew():
     print("== grading a crew: the whole, then the parts")
-    for label, summarizer in (("lossy", lossy_summarizer),
-                              ("careful", careful_summarizer)):
-        team = Crew(summarizer)
+    teams = (("lossy summarizer", Crew(lossy_summarizer)),
+             ("careful summarizer", Crew(careful_summarizer)),
+             ("eager researcher", Crew(careful_summarizer,
+                                       eager_researcher)))
+    for label, team in teams:
         run = run_case(team, T6)
         problems = state_problems(T6, run)
-        print(f"{label} summarizer, whole run:",
-              "PASS" if not problems else "FAIL")
+        print(f"{label}, whole run:", "PASS" if not problems else "FAIL")
         if problems:
             print("  fields:", problems["fields"])
-        lost = lost_at(team.stages)
-        print("  handoff check:",
-              f"{lost[0]} dropped {lost[1]}" if lost else "nothing lost")
+        lost, wrote = lost_at(team.stages), wrong_writers(team.calls)
+        print("  handoff:",
+              f"{lost[0]} dropped {lost[1]}" if lost else "nothing lost",
+              end="; ")
+        print("roles:", f"{', '.join(wrote)} wrote" if wrote else "ok")
 
 
 def paired_comparison():
@@ -132,10 +136,11 @@ def paired_comparison():
     for name, v in (("current", a), ("candidate", b)):
         p, lo, hi = pass_rate(v)
         print(f"{name:<10}{sum(v)}/{len(v)} pass  {p:.0%}  "
-              f"95% CI {lo:.0%} to {hi:.0%}")
+              f"Wilson {lo:.0%} to {hi:.0%}")
     for name, idx in slices(RELAY_60).items():
         m, (lo, hi) = paired_change(a, b, idx)
-        print(f"{name:<12} change {m:+.2f}  [{lo:+.2f}, {hi:+.2f}]")
+        print(f"{name:<12} change {m:+.2f}  [{lo:+.2f}, {hi:+.2f}]  "
+              f"sign test p {sign_p(a, b, idx):.2f}")
 
 
 def cost_per_resolved_task():

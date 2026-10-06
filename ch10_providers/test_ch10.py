@@ -391,7 +391,7 @@ def test_recovery_never_reruns_a_step_with_a_side_effect():
     assert recovery(text)[0] == "resume"
     assert recovery(nothing)[0] == "restart"
     assert recovery(text, effect_done=True)[0] == "confirm"
-    assert recovery(cut, outcome_unknown=True)[0] == "check"
+    assert recovery(cut, outcome_unknown=True)[0] == "replay"
 
 
 # ---- cancellation --------------------------------------------------
@@ -507,3 +507,221 @@ def test_the_demo_prints_the_same_thing_every_time():
             demo.main()
         outputs.append(buf.getvalue())
     assert outputs[0] == outputs[1] and "residency violations: 0" in outputs[0]
+
+
+# ---- review fixes (October 2026): each test failed before its fix ---
+
+def test_a_second_cancel_cannot_stop_a_payment_in_flight():
+    clock, log = VirtualClock(), fresh_log()
+
+    async def main():
+        task = asyncio.ensure_future(refund_step(log, clock))
+        for wait in (0.2, 0.1):            # a deadline, then a closed tab
+            await clock.sleep(wait)
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+    assert clock.run(main()) == "cancelled"
+    assert log.get("refund") == "paid"
+
+
+def test_many_cancels_still_let_the_payment_finish_then_obey():
+    clock, log = VirtualClock(), fresh_log()
+
+    async def main():
+        task = asyncio.ensure_future(refund_step(log, clock))
+        for _ in range(4):
+            await clock.sleep(0.1)
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return clock.now()
+    assert clock.run(main()) == pytest.approx(0.5)
+    assert log.get("refund") == "paid"
+
+
+def test_a_token_limit_stop_is_not_a_whole_answer():
+    clock, shown = VirtualClock(), []
+
+    async def source():
+        yield "text", "The refund policy is that"
+        yield "text", " you can return"
+        yield "stop", "length"
+    res = clock.run(consume(source(), shown.append, clock))
+    assert (res.status, res.why) == ("incomplete", "length")
+    assert shown == []
+
+
+def test_a_decimal_point_is_not_a_full_stop():
+    clock, shown = VirtualClock(), []
+
+    async def source():
+        yield "text", "The refund is $15."
+        raise ConnectionError("cut before '00 today.'")
+    res = clock.run(consume(source(), shown.append, clock))
+    assert res.why == "cut" and shown == []
+
+    async def whole():
+        yield "text", "The refund is $15."
+        yield "text", "00 today."
+        yield "text", " Anything else?"
+        yield "stop", "end"
+    shown = []
+    res = clock.run(consume(whole(), shown.append, clock))
+    assert shown == ["The refund is $15.00 today.", " Anything else?"]
+
+
+def test_pings_and_unknown_events_are_dropped_and_do_not_feed_the_timer():
+    from ch10_providers.adapters import adapted
+    clock = VirtualClock()
+
+    async def raw():
+        yield {"type": "text_delta", "text": "Hello."}
+        yield {"type": "brand_new_event"}
+        for _ in range(30):                # keep-alives, no words
+            await clock.sleep(1)
+            yield {"type": "ping"}
+    res = clock.run(consume(adapted(raw(), adapt_a), lambda s: None,
+                            clock))
+    assert (res.status, res.why) == ("incomplete", "stalled")
+    assert adapt_a({"type": "message_stop", "stop_reason": "refusal"}) \
+        == ("stop", "refusal")
+    assert adapt_a({"type": "error", "error": "api_error"}) == ("error", 500)
+    assert adapt_b({"error": "teapot"}) == ("error", 500)
+
+
+def test_a_spend_cap_429_is_not_retried():
+    assert not retryable(STATUS_A["spend_cap"])
+    assert not retryable(STATUS_B["spend_cap"])
+
+
+def test_global_spill_over_cannot_take_the_slots_held_for_eu():
+    from ch10_providers.catalog import take_slot
+    cat = make_catalog()
+    b = cat[1]
+    b.in_flight = 20                               # its usual EU chats
+    sig = dict(HEALTHY,
+               **{"Provider A": Signals(0.55, 4.0, 0.33, "open")})
+    chat = Request("global", 8_000, True)
+    for _ in range(30):                            # A is down: spill-over
+        try:
+            take_slot(route(cat, chat, sig), chat)
+        except NoEligibleProvider:
+            break
+    assert b.in_flight == 32                       # 12 global, 8 still free
+    assert route(cat, MARIA, sig).name == "Provider B"
+
+
+def test_the_plan_holds_the_same_slots_for_eu_chats():
+    b = make_catalog()[1]
+    placed, over = plan_shift({"eu_chat": 20, "chat": 80}, b.limit, b.held)
+    assert placed == {"eu_chat": 20, "chat": 12, "background": 0}
+    assert over["chat"] == 68
+    placed, over = plan_shift({"eu_chat": 20, "chat": 80}, 60, b.held)
+    assert placed["chat"] == 32 and over["chat"] == 48
+    placed, over = plan_shift({"eu_chat": 50, "chat": 10,
+                               "background": 5}, 40, b.held)
+    assert placed == {"eu_chat": 40, "chat": 0, "background": 0}
+
+
+def test_an_open_breaker_lowers_the_service_tier():
+    cat = a_down_catalog()
+    assert choose_tier(cat, MARIA, tripped={"Provider B"}) == 2
+    assert choose_tier(cat, MARIA, tripped={"Provider B",
+                                            "Provider B small"}) == 3
+    world = World(VirtualClock())
+    for _ in range(5):
+        world.breakers["Provider B"].record(False)
+    done, lines = serve_once(world)
+    assert done is None and lines[-1].endswith("tier 2")
+
+
+def test_a_backup_that_fails_twice_hands_off():
+    world = World(VirtualClock())
+    world.streams = [7, 7]
+    done, lines = serve_once(world)
+    assert done is None and world.payments.calls == []
+    assert lines[-1] == "backup failed twice: hand off to a human"
+
+
+def test_a_lost_answer_is_replayed_with_the_same_key():
+    cut = StreamResult("incomplete", ["One."], partial_tool="{")
+    action, why = recovery(cut, outcome_unknown=True)
+    assert action == "replay" and "same call and key" in why
+
+
+def test_only_what_cannot_be_undone_is_irreversible():
+    from ch10_providers.tiers import FULL_BELT, IRREVERSIBLE
+    assert IRREVERSIBLE == {"issue_refund", "escalate_incident"}
+    assert len(FULL_BELT) == 8
+    log = []
+    for tool in ("create_ticket", "reschedule_delivery", "reset_password"):
+        with pytest.raises(ActionBlocked):         # fixable, yet no writes
+            guard_tool(tool, 2, log)
+
+
+def test_a_score_gap_alone_never_moves_the_primary():
+    cat = make_catalog()
+    chat = Request("global", 8_000, True)
+    dip = dict(HEALTHY, **{"Provider A": Signals(0.92, 1.2, 0.33)})
+    assert rank(cat, chat, dip)[0].name == "Provider B"   # one line
+    assert route(cat, chat, dip, primary="Provider A",
+                 draw=0.99).name == "Provider A"
+    assert route(cat, chat, dip, primary="Provider A", share=0.1,
+                 draw=0.5).name == "Provider B"
+    full = dict(HEALTHY, **{"Provider A": Signals(0.99, 1.2, 0.10)})
+    assert route(cat, chat, full, primary="Provider A",
+                 draw=0.6).name == "Provider B"    # half its share left
+    down = dict(HEALTHY, **{"Provider A": Signals(0.5, 4.0, 0.3, "open")})
+    assert route(cat, chat, down, primary="Provider A").name == "Provider B"
+
+
+def test_errors_between_the_lines_during_the_ramp_step_back():
+    clock = FakeClock()
+    h = Hysteresis(clock)
+    h.observe(30)
+    h.observe(1)
+    clock.sleep(300)
+    assert h.observe(1) == 0.1
+    clock.sleep(60)
+    assert h.observe(15) == 0.0                    # not calm: wait again
+
+
+def test_a_relapse_soon_after_a_return_doubles_the_wait():
+    clock = FakeClock()
+    h = Hysteresis(clock)
+    h.observe(30)
+    h.observe(1)
+    clock.sleep(300)
+    assert h.observe(1) == 0.1                     # first return: 5 min
+    clock.sleep(60)
+    h.observe(30)                                  # relapse
+    h.observe(1)
+    clock.sleep(300)
+    assert h.observe(1) == 0.0                     # 5 min is not enough
+    clock.sleep(300)
+    assert h.observe(1) == 0.1                     # 10 min is
+
+
+def test_replaying_a_refund_whose_answer_was_lost_pays_once():
+    from ch02_trust_outputs.idem import Payments, RefundService, make_key
+
+    class LostOnce(Payments):              # pays, then the reply is lost
+        lost = False
+
+        def refund(self, *args, **kwargs):
+            result = super().refund(*args, **kwargs)
+            if not self.lost:
+                self.lost = True
+                raise TimeoutError("paid, but no answer came back")
+            return result
+    pay = LostOnce()
+    service = RefundService(pay)
+    call = validate_refund_args(GOOD_CALL, "cust-22")
+    key = make_key("conv-1", call.order_id)
+    with pytest.raises(TimeoutError):
+        service.issue_refund(call, key)
+    assert service.issue_refund(call, key)["amount_cents"] == 1500
+    assert pay.calls == [("ORD-004830", 1500)]       # the replay paid once

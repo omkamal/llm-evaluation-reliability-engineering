@@ -1,4 +1,6 @@
 """Every Chapter 11 output.   python3 -m ch11_traces.demo"""
+import json
+
 from ch03_first_eval.run_evals import grade
 from ch06_agents.trajectory import grade_trajectory
 from ch07_datasets.redact import redact
@@ -12,7 +14,7 @@ from ch11_traces.cost import structure_bytes, steady_gb, text_bytes
 from ch11_traces.debug import shrink
 from ch11_traces.evals import (calls_from_trace, failing_traces, link_judge,
                                trace_to_case)
-from ch11_traces.health import edge_hook, health
+from ch11_traces.health import health, redacting_export
 from ch11_traces.relay_run import (ORDER, WINDOW, Crew, answer_run,
                                    flat_run, loop_run, nightly_batch,
                                    run_batch)
@@ -38,7 +40,7 @@ def old_and_new():
     clock, tracer = fresh(5)
     flat_run(tracer, clock)
     print("\n".join(render_tree(tracer.finished)))
-    print("== the same kind of run, as a tree")
+    print("== a shorter run of the same Crew, as a tree")
     clock, tracer = fresh()
     Crew(tracer, clock).run("conv-0412")
     print("\n".join(render_tree(tracer.finished)))
@@ -49,7 +51,7 @@ def old_and_new():
 
 def errors():
     print("== an error is data")
-    clock, tracer = fresh(5)
+    clock, tracer = fresh(6)
     loop_run(tracer, clock)
     print("\n".join(render_tree(tracer.finished)))
     print("== a trajectory grader reads the trace")
@@ -118,7 +120,7 @@ def hygiene():
         print(f"{name:<9} kept {kept} traces, {bad} of {errors_n} errors, "
               f"{slow} of {slow_n} slow")
     print("== redaction at the edge")
-    clock, tracer = fresh(on_end=edge_hook(redact))
+    clock, tracer = fresh(export=redacting_export(redact))
     for text in ("rescheduling for anna.keller@example.com",
                  "rescheduling for Hannelore Vogt, Lindenstrasse 12"):
         with tracer.span("retrieval policy_index", "retrieval", attrs={
@@ -126,11 +128,16 @@ def hygiene():
             pass
         print("stored:", tracer.finished[-1].attributes[
             "gen_ai.retrieval.query.text"])
+    args = {"order_id": ORDER, "description": "lost; anna.keller@example.com"}
+    with tracer.span("execute_tool create_ticket", "tool", attrs={
+            "relay.tool.args": json.dumps(args, sort_keys=True)}):
+        pass                            # free text inside tool arguments
+    print("stored:", tracer.finished[-1].attributes["relay.tool.args"])
     print("== a score attached to the trace it grades")
     clock, tracer = fresh()
     crew = Crew(tracer, clock)
     careful = crew.run("conv-0410", summarize_with=careful_summarize)
-    lossy = crew.run("conv-0412")
+    lossy = crew.run("conv-0413")
     for root in (careful, lossy):
         saw = [s for s in tracer.finished if s.trace_id == root.trace_id
                and s.attributes.get("relay.context.fields_missing")]
@@ -146,7 +153,7 @@ def hygiene():
 
 def fleet():
     print("== trace health, 100 simulated conversations")
-    clock, tracer = fresh(on_end=edge_hook(redact))
+    clock, tracer = fresh(export=redacting_export(redact))
     spans = run_batch(tracer, clock, 100)
     h = health(spans, redact)
     print(f"{h['conversations']} conversations, {h['spans']:,} spans")
@@ -184,7 +191,7 @@ def debugging():
     clock, tracer = fresh()
     root, call = answer_run(tracer, clock,
                             "How long do I have to return a jacket?", "v2")
-    case = trace_to_case(root, "returns", r"14 days", r"30 days", "R-31")
+    case = trace_to_case(root, "returns", r"14 days", r"30 days", "R-32")
     print(case["id"], case["source"], repr(case["question"]))
     for version in ("v1", "v2"):
         ok, why = grade(case, ask(case["question"], version))

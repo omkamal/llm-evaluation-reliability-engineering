@@ -9,9 +9,11 @@ from ch19_incidents import compensate as comp
 from ch19_incidents.comms import StatusUpdate, lint
 from ch19_incidents.declare import (Incident, declare_reasons, response,
                                     severity)
-from ch19_incidents.demo import inc6_clock
-from ch19_incidents.flags import (CURRENT, LAST_GOOD, SAFE, FlagStore,
-                                  resolve)
+from ch13_drift.bands import check_rate
+from ch19_incidents.demo import inc6_clock, inc6_replay
+from ch19_incidents.detect import credits_without_approver
+from ch19_incidents.flags import (CURRENT, LAST_GOOD, NORMAL, SAFE,
+                                  FlagStore, resolve)
 from ch19_incidents.postmortem import (ActionItem, Factor, Postmortem,
                                        cases_added, closed_share,
                                        problems)
@@ -19,13 +21,14 @@ from ch19_incidents.recovery import can_close, settled
 from ch19_incidents.runbook import (INC6_RUNBOOK, NotALadder, Step, climb,
                                     check_ladder)
 from ch19_incidents.standin import (NOTE_CASES, attempt,
-                                    credit_under_limit_works, harm_probe)
+                                    credit_under_limit_works, harm_probe,
+                                    reworded)
 from ch19_incidents.timeline import (at, clock_text, durations, merge,
                                      render, Scribe)
 
 
 def store(**flags):
-    return FlagStore({"bundle": CURRENT, **flags})
+    return FlagStore({**NORMAL, **flags})
 
 
 # ---- the clock ------------------------------------------------------
@@ -44,10 +47,52 @@ def test_inc6_clock_matches_the_incident_facts():
                                 "message to pin": 68}
 
 
-def test_trace_rows_leave_free_text_out():
+def test_trace_rows_show_the_order_and_the_amount():
     rows, _ = inc6_clock()
     text = " ".join(r[2] for r in rows)
-    assert "amount_cents=40000" in text and "reason" not in text
+    assert "amount_cents=40000 order_id=ORD-004831" in text
+
+
+# ---- detection: what would have fired ------------------------------
+
+def test_the_band_on_credits_cannot_see_one_wrong_credit():
+    # five minutes of tasks (about 104), three usual credits plus INC-6's
+    assert check_rate(0.03, 4, 104) == "inside"
+    assert check_rate(0.03, 31, 1000) == "inside"
+
+
+def test_the_credit_rule_pages_on_the_inc6_replay_at_1403():
+    _, spans = inc6_replay()
+    pages = credits_without_approver(spans)
+    assert [(clock_text(t), text) for t, text in pages] == [
+        ("14:03", "$400.00 needed a person, none approved")]
+
+
+class FakeSpan:
+    def __init__(self, start, cents, who="cust-1", approver=None):
+        self.start = start
+        self.attributes = {
+            "gen_ai.tool.name": "issue_refund", "enduser.id": who,
+            "relay.tool.args": ('{"amount_cents": %d, "order_id": '
+                                '"ORD-000001", "reason": "late"}' % cents)}
+        if approver:
+            self.attributes["relay.approver"] = approver
+
+
+def test_the_credit_rule_ignores_small_or_approved_credits():
+    assert credits_without_approver([FakeSpan(0, 1500)]) == []
+    assert credits_without_approver([FakeSpan(0, 40000, "c", "lena")]) == []
+
+
+def test_the_credit_rule_uses_the_daily_total_per_customer():
+    three = [FakeSpan(t, 4000) for t in (10, 20, 30)]
+    assert [t for t, _ in credits_without_approver(three)] == [30]
+    apart = [FakeSpan(10, 4000, "a"), FakeSpan(20, 4000, "b"),
+             FakeSpan(30, 4000, "c")]
+    assert credits_without_approver(apart) == []
+    next_day = [FakeSpan(10, 4000), FakeSpan(20, 4000),
+                FakeSpan(86400 + 30, 4000)]
+    assert credits_without_approver(next_day) == []
 
 
 def test_merge_orders_by_time_and_render_prints_one_line_each():
@@ -100,12 +145,31 @@ def test_pin_chooses_the_bundle():
     assert resolve(store(bundle=LAST_GOOD)).bundle == LAST_GOOD
 
 
-def test_unread_flag_with_service_down_gets_the_safe_default():
-    cold = store(kill_switch=True)
+def test_cold_start_with_service_down_fails_safe():
+    cold = store(kill_switch=False)      # even on a normal day
     cold.reachable = False
     cfg = resolve(cold)
     assert cfg.bundle == SAFE["bundle"] == LAST_GOOD
-    assert cfg.mode == "normal"
+    assert cfg.mode == "handoff" and not cfg.tools
+
+
+def test_a_flag_the_service_does_not_hold_reads_as_its_safe_default():
+    assert resolve(FlagStore({"bundle": CURRENT})).mode == "handoff"
+    assert SAFE["kill_switch"] is True and SAFE["max_tier"] == 2
+
+
+def test_saved_values_survive_a_restart_with_the_service_down():
+    disk = {}
+    live = FlagStore({**NORMAL, "kill_switch": True}, saved=disk)
+    resolve(live)
+    after = FlagStore({}, saved=disk)    # restarted, service still down
+    after.reachable = False
+    assert resolve(after).mode == "handoff"
+    calm = {}
+    resolve(FlagStore(NORMAL, saved=calm))
+    back = FlagStore({}, saved=calm)
+    back.reachable = False
+    assert resolve(back).mode == "normal"    # last read, not a default
 
 
 def test_service_down_keeps_the_last_value_read():
@@ -136,6 +200,17 @@ def test_each_rung_alone():
         ("kill", {"kill_switch": True}))}
     assert left["tool"] == left["approve"] == ["INJ-02", "INJ-03"]
     assert left["degrade"] == left["pin"] == left["kill"] == []
+
+
+def test_the_pin_is_luck_not_a_lock():
+    every = [reworded(c) for c in NOTE_CASES]
+    pinned = resolve(store(bundle=LAST_GOOD))
+    assert harm_probe(pinned, every) == ["INJ-01", "INJ-02", "INJ-03"]
+    with_rung_1 = resolve(store(bundle=LAST_GOOD,
+                                disabled_tools=("issue_refund",)))
+    assert harm_probe(with_rung_1, every) == ["INJ-02", "INJ-03"]
+    guarded = resolve(store(bundle="2026.09.17"))
+    assert harm_probe(guarded, every) == []
 
 
 def test_approval_queues_instead_of_acting():
@@ -186,8 +261,9 @@ def test_declare_reasons():
     assert declare_reasons(irreversible_action=True)
     assert declare_reasons(minutes_unsolved=30) == []
     assert declare_reasons(minutes_unsolved=60)
-    assert len(declare_reasons(customers_hurt=True,
+    assert len(declare_reasons(customers_see=True,
                                other_team_needed=True)) == 2
+    assert "customers can see it" in declare_reasons(customers_see=True)
 
 
 def test_severity_follows_what_the_agent_did():
@@ -210,54 +286,82 @@ def test_incident_roles_are_kept_apart():
     assert team.problems() == ["commander is also changing the system"]
     team.ops, team.comms = "Sam", "Sam"
     assert len(team.problems()) == 1
+    small = Incident("INC-6", 1, "14:40", "Priya", "Sam", "Marcus",
+                     "Marcus")                # comms may also scribe
+    assert small.problems() == []
 
 
 # ---- compensating actions ------------------------------------------
 
-def books(spent=0):
+def books(spent=0, own=0):
     state = comp.open_ledger(
-        new_state(0), {ord_id(0): "cust-17", ord_id(1): "cust-22"}, {})
+        new_state(0), {ord_id(0): "cust-17", ord_id(1): "cust-22"},
+        {"cust-22": own} if own else {})
     credit = comp.issue_refund(state, ord_id(1), 40000, "k1")
     if spent:
         comp.spend(state, "cust-22", spent, "s1")
     return state, credit
 
 
+def back(state, credit, key="r1"):
+    return comp.reverse_credit(state, credit, key, approved_by="Finance")
+
+
 def test_unspent_credit_is_taken_back_in_full():
     state, credit = books()
-    assert comp.reverse_credit(state, credit, "r1") == {
-        "recovered": 40000, "owed": 0}
+    assert back(state, credit) == {"recovered": 40000, "owed": 0}
     assert comp.balance(state, "cust-22") == 0
 
 
 def test_spent_credit_is_recovered_in_part_and_the_rest_is_owed():
     state, credit = books(spent=15000)
-    assert comp.reverse_credit(state, credit, "r1") == {
-        "recovered": 25000, "owed": 15000}
+    assert back(state, credit) == {"recovered": 25000, "owed": 15000}
     assert comp.balance(state, "cust-22") == 0      # owed is a claim
+
+
+def test_a_reversal_never_takes_the_customers_own_money():
+    state, credit = books(spent=15000, own=30000)
+    assert back(state, credit) == {"recovered": 25000, "owed": 15000}
+    assert comp.balance(state, "cust-22") == 30000
+
+
+def test_spending_beyond_the_credit_leaves_it_all_owed():
+    state, credit = books(spent=50000, own=30000)
+    assert back(state, credit) == {"recovered": 0, "owed": 40000}
+    assert comp.balance(state, "cust-22") == 20000
+
+
+def test_a_reversal_is_never_automatic():
+    state, credit = books(spent=15000)
+    lines = len(state["ledger"])
+    with pytest.raises(comp.NeedsFinance):
+        comp.reverse_credit(state, credit, "r1")
+    assert len(state["ledger"]) == lines
+    assert [e["tool"] for e in state["audit_log"]] == ["issue_refund"]
 
 
 def test_the_ledger_is_append_only():
     state, credit = books(spent=15000)
     before = [dict(x) for x in state["ledger"]]
-    comp.reverse_credit(state, credit, "r1")
+    back(state, credit)
     assert state["ledger"][:len(before)] == before
 
 
 def test_reversal_with_the_same_key_posts_nothing_new():
     state, credit = books(spent=15000)
-    first = comp.reverse_credit(state, credit, "r1")
+    first = back(state, credit)
     lines, audit = len(state["ledger"]), len(state["audit_log"])
-    assert comp.reverse_credit(state, credit, "r1") == first
+    assert back(state, credit) == first
     assert (len(state["ledger"]), len(state["audit_log"])) == (lines,
                                                               audit)
 
 
-def test_one_audit_event_per_write():
+def test_one_audit_event_per_write_naming_the_approver():
     state, credit = books()
-    comp.reverse_credit(state, credit, "r1")
+    back(state, credit)
     assert [e["tool"] for e in state["audit_log"]] == [
         "issue_refund", "reverse_credit"]
+    assert state["audit_log"][-1]["approved_by"] == "Finance"
 
 
 def test_a_second_credit_with_the_same_key_pays_once():
@@ -298,6 +402,11 @@ def test_settled_needs_k_windows_inside_the_band():
     assert settled(0.03, [(0, 1000), (24, 1000), (29, 1000)])
     assert not settled(0.03, [(29, 1000)])             # one window only
     assert not settled(0.03, [(1, 20), (1, 20)])       # too little data
+
+
+def test_the_band_on_1000_tasks_holds_20_to_40_credits():
+    states = [check_rate(0.03, k, 1000) for k in (19, 20, 40, 41)]
+    assert states == ["below", "inside", "inside", "above"]
 
 
 def test_a_silent_signal_is_below_its_band_not_healthy():
@@ -348,6 +457,18 @@ def test_internal_words_are_fine_inside_the_team():
     assert lint(inside, "customer")
 
 
+def test_no_one_else_affected_is_a_guess_until_checked():
+    guess = StatusUpdate("A $400 credit went to the wrong account.",
+                         "One account. No other credits are affected.",
+                         "Credits are switched off.", "15:15")
+    assert lint(guess, "internal") == [
+        "rules others out before the check is done"]
+    assert lint(guess, "internal", verified=True) == []
+    known = StatusUpdate("x", "One account so far; other credits are "
+                         "being checked.", "y", "15:15")
+    assert lint(known, "internal") == []
+
+
 def test_done_is_not_said_before_recovery_is_verified():
     done = StatusUpdate("It is now resolved.", "None.", "Nothing.",
                         "16:00")
@@ -375,8 +496,8 @@ def inc6():
                    "INJ-01 INJ-02 INJ-03", True),
         ActionItem("kill switch and pin, drilled", "Priya", "2026-09-22",
                    "D-KILL-01", True),
-        ActionItem("page on credits outside band", "Priya", "2026-09-24",
-                   "A-CRED-01", True),
+        ActionItem("page on any credit that skipped a person", "Priya",
+                   "2026-09-24", "A-CRED-01", True),
         ActionItem("scoped credentials", "Lena", "2026-10-02",
                    "G-SCOPE-01", False)]
     return pm
@@ -430,9 +551,9 @@ def test_factors_may_not_name_a_person_but_owners_may():
 # ---- the chapter's exercises ----------------------------------------
 
 def test_exercise_spent_in_full():
-    state, credit = books(spent=40000)
-    assert comp.reverse_credit(state, credit, "r1") == {
-        "recovered": 0, "owed": 40000}
+    state, credit = books(spent=40000, own=3000)
+    assert back(state, credit) == {"recovered": 0, "owed": 40000}
+    assert comp.balance(state, "cust-22") == 3000
 
 
 def test_exercise_noisy_window():
@@ -452,3 +573,6 @@ def test_exercise_the_one_rung():
             if not harm_probe(resolve(store(**extra)))
             and credit_under_limit_works(resolve(store(**extra)))]
     assert both == ["pin"]
+    # ... and only on the replayed wordings: reworded, the pin leaks
+    pinned = resolve(store(bundle=LAST_GOOD))
+    assert harm_probe(pinned, [reworded(NOTE_CASES[0])]) == ["INJ-01"]

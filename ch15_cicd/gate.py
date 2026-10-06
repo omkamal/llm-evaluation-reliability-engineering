@@ -2,19 +2,24 @@
 
 Reads main's scores and the change's scores, case by case, and decides
 PASS, WARN or BLOCK with the evidence. Exit code 0 for PASS and WARN,
-1 for BLOCK, 2 when the two runs cannot be compared.
+1 for BLOCK, 2 when the run cannot be judged: the two runs are not
+comparable, or the run is INCOMPLETE (too few cases, a never-fail case
+of main's not run, or too many trials that errored).
 
 Each side is {case id: {"slice": ..., "never_fail": ..., "trials": [...]}}
-with one 0 or 1 per trial. A case's score is its pass rate over trials.
+with one 0 or 1 per trial, or None for a trial that errored (a timeout,
+a 429). A case's score is its pass rate over the trials that ran.
 """
 import argparse
 import json
 import sys
 from dataclasses import dataclass
 
-from ch04_numbers.stats import mean, paired_bootstrap
+from ch04_numbers.stats import mean, paired_bootstrap, wilson_interval
 
-ORDER = {"PASS": 0, "SKIP": 0, "WARN": 1, "BLOCK": 2}
+ORDER = {"PASS": 0, "SKIP": 1, "WARN": 1, "BLOCK": 2, "INCOMPLETE": 3}
+# A skipped rule was not judged, so it ranks with WARN, never with PASS.
+MAX_ERRORED = 0.05     # a larger share of errored trials: INCOMPLETE
 
 
 @dataclass(frozen=True)
@@ -37,8 +42,35 @@ def verdict(lo, hi, rule):
     return rule.on_unsure.upper()       # not shown either way
 
 
+def overall(verdicts):
+    """BLOCK if any rule blocks; PASS only if every rule passed. A rule
+    that was skipped was not judged: it can make a WARN, never a PASS."""
+    if "BLOCK" in verdicts:
+        return "BLOCK"
+    return "PASS" if set(verdicts) == {"PASS"} else "WARN"
+
+
+def ran(case):
+    """The trials that produced an answer (errored ones are None)."""
+    return [t for t in case["trials"] if t is not None]
+
+
 def rates(side, ids):
-    return [mean(side[i]["trials"]) for i in ids]
+    return [mean(ran(side[i])) for i in ids]
+
+
+def interval(a, b, resamples=10_000, seed=0):
+    """Chapter 4's paired bootstrap, kept honest when few cases moved.
+
+    The bootstrap only reshuffles what it saw: twenty cases that did not
+    move give [0, 0], and a PASS. But n cases cannot rule out a share of
+    regressions that this run happened not to show: up to the Wilson
+    limit for 0 of n (16% at n = 20). So the lower end, the one that
+    decides a PASS, never sits closer to the change than that."""
+    delta, (lo, hi) = paired_bootstrap(a, b, resamples=resamples,
+                                       seed=seed)
+    unseen = wilson_interval(0, len(a))[1]
+    return delta, (min(lo, delta - unseen), hi)
 
 
 def check_rule(rule, base, new, min_cases, resamples, seed):
@@ -47,8 +79,7 @@ def check_rule(rule, base, new, min_cases, resamples, seed):
         return {"slice": rule.slice, "n": len(ids), "verdict": "SKIP",
                 "note": f"only {len(ids)} cases, need {min_cases}"}
     a, b = rates(base, ids), rates(new, ids)
-    delta, (lo, hi) = paired_bootstrap(a, b, resamples=resamples,
-                                       seed=seed)
+    delta, (lo, hi) = interval(a, b, resamples=resamples, seed=seed)
     return {"slice": rule.slice, "n": len(ids), "base": mean(a),
             "new": mean(b), "delta": delta, "lo": lo, "hi": hi,
             "margin": rule.margin, "verdict": verdict(lo, hi, rule),
@@ -66,28 +97,48 @@ def check_floor(new):
     cases = {i: c for i, c in new.items() if c["never_fail"]}
     failed = {i: c["trials"].count(0) for i, c in cases.items()
               if 0 in c["trials"]}
-    trials = sum(len(c["trials"]) for c in cases.values())
+    trials = sum(len(ran(c)) for c in cases.values())
     return {"cases": len(cases), "trials": trials, "failed": failed,
             "verdict": "BLOCK" if failed else "PASS"}
 
 
+def incomplete(base, new, min_cases):
+    """Why this run cannot be judged, or [] when it can. A run with no
+    cases, or without main's never-fail cases, has tested nothing."""
+    why = []
+    if len(new) < min_cases:
+        why.append(f"only {len(new)} cases in the run, need {min_cases}")
+    gone = sorted(i for i, c in base.items() if c["never_fail"]
+                  and not (i in new and ran(new[i])))
+    if gone:
+        why.append("never-fail cases not run: " + ", ".join(gone))
+    trials = [t for c in new.values() for t in c["trials"]]
+    if trials.count(None) > MAX_ERRORED * len(trials):
+        why.append(f"{trials.count(None)} of {len(trials)} trials errored")
+    return why
+
+
 def decide(base, new, rules, *, min_cases=20, resamples=10_000, seed=0):
-    ids = sorted(new)
-    missing = [i for i in ids if i not in base]
+    missing = [i for i in sorted(new) if i not in base]
     if missing:
         raise ValueError(f"main has no score for {missing[:3]}")
+    why = incomplete(base, new, min_cases)
+    if why:
+        return {"verdict": "INCOMPLETE", "rows": [], "floor": None,
+                "worse": [], "because": why}
+    new = {i: c for i, c in new.items() if ran(c)}
     rows = [check_rule(r, base, new, min_cases, resamples, seed)
             for r in rules]
     floor = check_floor(new)
-    worst = max(rows + [floor], key=lambda r: ORDER[r["verdict"]])
-    drops = sorted(ids, key=lambda i: mean(new[i]["trials"])
-                   - mean(base[i]["trials"]))
-    worse = [i for i in drops[:3] if mean(new[i]["trials"])
-             < mean(base[i]["trials"])]
-    because = [r["slice"] for r in rows if r["verdict"] == worst["verdict"]]
-    if floor["verdict"] == worst["verdict"]:
+    final = overall([r["verdict"] for r in rows] + [floor["verdict"]])
+    score = lambda side, i: mean(ran(side[i]))
+    drops = sorted(new, key=lambda i: score(new, i) - score(base, i))
+    worse = [i for i in drops[:3] if score(new, i) < score(base, i)]
+    because = [r["slice"] for r in rows
+               if ORDER[r["verdict"]] == ORDER[final]]
+    if ORDER[floor["verdict"]] == ORDER[final]:
         because.append("never-fail")
-    return {"verdict": worst["verdict"], "rows": rows, "floor": floor,
+    return {"verdict": final, "rows": rows, "floor": floor,
             "worse": worse, "because": because}
 
 
@@ -101,11 +152,13 @@ def changed_fields(old, new):
 
 def render(result, base, new, changed=()):
     """The decision, with its evidence, as Markdown for a person."""
-    lines = [f"### Eval gate: {result['verdict']}", "",
-             "Changed since main: " + (", ".join(changed) or "nothing"),
-             "",
-             "| slice (cases) | main to PR | change | 95% interval | verdict |",
-             "|" + "|".join("-" * n for n in (16, 12, 8, 18, 9)) + "|"]
+    lines = [f"### Eval gate: {result['verdict']}", ""]
+    if result["verdict"] == "INCOMPLETE":
+        return lines + [f"- {why}" for why in result["because"]]
+    lines += ["Changed since main: " + (", ".join(changed) or "nothing"),
+              "",
+              "| slice (cases) | main to PR | change | 95% interval | verdict |",
+              "|" + "|".join("-" * n for n in (16, 12, 8, 18, 9)) + "|"]
     for r in result["rows"]:
         name = f"{r['slice']} ({r['n']})"
         if r["verdict"] == "SKIP":
@@ -121,7 +174,7 @@ def render(result, base, new, changed=()):
     for i, k in sorted(f["failed"].items())[:3]:
         lines.append(f"  - {i} failed {k} of {len(new[i]['trials'])} trials")
     for i in result["worse"]:
-        was, now = mean(base[i]["trials"]), mean(new[i]["trials"])
+        was, now = mean(ran(base[i])), mean(ran(new[i]))
         lines.append(f"worse: {i} {was:.2f} to {now:.2f}")
     if result["verdict"] != "PASS":
         lines.append("decided by: " + ", ".join(result["because"]))
@@ -137,6 +190,9 @@ def comparable(base, new):
     """Scores from different eval sets or judges must not be compared."""
     return [k for k in ("eval_set", "judge")
             if base["record"][k] != new["record"][k]]
+
+
+EXIT = {"PASS": 0, "WARN": 0, "BLOCK": 1, "INCOMPLETE": 2}
 
 
 def main(argv=None):
@@ -157,7 +213,7 @@ def main(argv=None):
                     min_cases=cfg["min_cases"], resamples=args.resamples)
     changed = changed_fields(base["record"], new["record"])
     print("\n".join(render(result, base["cases"], new["cases"], changed)))
-    return 1 if result["verdict"] == "BLOCK" else 0
+    return EXIT[result["verdict"]]
 
 
 if __name__ == "__main__":

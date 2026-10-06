@@ -1,12 +1,18 @@
 """The flaky Relay, the simulated A/B scores and the report card."""
 import random
+import statistics
 
 import pytest
 
 from ch04_numbers.ab_scores import prompt_ab_scores
-from ch04_numbers.noisy import (STAY_RIGHT, LUCKY, case_scores, flagged_count,
+from ch03_first_eval.cases import CASES
+from ch04_numbers.noisy import (STAY_RIGHT, LUCKY, case_scores,
+                                false_alarm_count, flagged_count,
                                 many_trials, one_run, pass_chances)
 from ch04_numbers.report_card import report_card, verdict
+from ch04_numbers.stats import proportion_ci
+
+TOPICS = [case["topic"] for case in CASES]
 
 
 def test_pass_chances_follow_the_scripted_answers():
@@ -71,6 +77,44 @@ def test_report_card_on_a_clear_regression_and_on_identical_runs():
 def test_report_card_refuses_mismatched_cases():
     with pytest.raises(ValueError):
         report_card("a", "b", [1, 0, 1], [1, 0])
+    with pytest.raises(ValueError):          # rubric scores are not rates
+        report_card("a", "b", [4, 5, 3], [5, 5, 4])
+
+
+def test_report_card_never_claims_certainty_from_thirty_of_thirty():
+    lines = report_card("a", "b", [1] * 30, [1] * 30)
+    assert lines[0] == "a: pass rate 1.00, 95% CI [0.89, 1.00]"
+    lines = report_card("a", "b", [1] * 29 + [0], [1] * 30)
+    assert lines[0] == "a: pass rate 0.97, 95% CI [0.83, 0.99]"
+
+
+def test_report_card_by_topic_on_friday_at_five_trials():
+    rng = random.Random(0)
+    v1 = case_scores(many_trials("v1", 5, rng))
+    v2 = case_scores(many_trials("v2", 5, rng))
+    plain = report_card("v1", "v2", v1, v2)
+    assert plain[2] == "v2 minus v1, paired: -0.12 [-0.25, -0.01]"
+    assert plain[-1].startswith("verdict: worse")   # counted by case
+    lines = report_card("v1", "v2", v1, v2, clusters=TOPICS)
+    assert lines[0] == "v1: pass rate 0.89, 95% CI [0.73, 0.96]"
+    assert lines[3] == "  by cluster: [-0.32, +0.03]"
+    assert "inconclusive" in lines[-1]              # counted by topic
+
+
+def test_a_a_false_alarms_run_near_seven_in_a_hundred():
+    assert false_alarm_count(5, 400) == 18          # 4.5%: a lucky seed
+    assert false_alarm_count(5, 1_000, seed=1) == 78   # about 7 in 100
+    # ten topics are few units: the cluster interval runs narrower still
+    assert false_alarm_count(5, 400, clusters=TOPICS) == 39   # about 10
+
+
+def test_ten_trials_of_thirty_cases_are_not_three_hundred_cases():
+    assert round(proportion_ci(0.89 * 300, 300)[1], 3) == 0.018
+    assert round(proportion_ci(0.89 * 30, 30)[1], 3) == 0.057
+    for seed in range(3):
+        rates = case_scores(many_trials("v1", 10, random.Random(seed)))
+        honest = statistics.stdev(rates) / 30 ** 0.5
+        assert 0.035 < honest < 0.045           # "about 0.04"
 
 
 def test_the_demo_prints_the_worked_examples(capsys):
@@ -79,5 +123,7 @@ def test_the_demo_prints_the_worked_examples(capsys):
     out = capsys.readouterr().out
     for line in ("p = 0.75 per try, k = 3: pass@k 98.4%, pass^k 42.2%",
                  "paired:   +0.12 [+0.03, +0.21]",
-                 "unpaired: +0.12 [-0.07, +0.31]"):
+                 "unpaired: +0.12 [-0.07, +0.31]",
+                 "by topic: -0.17 [-0.40, +0.00]",
+                 "10 pts       248      88"):
         assert line in out

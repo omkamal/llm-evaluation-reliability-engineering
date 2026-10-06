@@ -10,8 +10,9 @@ from ch12_slos.tasks import Task, percentile
 from ch14_cost.economics import PREFIX, REPLY
 from ch14_cost.prices import call_usd
 
-SECONDS = {"small": 0.8, "frontier": 2.4, "check": 0.1, "classify": 0.3}
+SECONDS = {"small": 0.8, "frontier": 2.4, "check": 0.3, "classify": 0.3}
 CLASSIFIER_TOKENS = 300       # a router's classifier is a tiny call
+CHECK_TOKENS = PREFIX + REPLY  # the judge rereads prompt and answer
 
 
 @dataclass(frozen=True)
@@ -55,20 +56,24 @@ def frontier_only(cases):
 
 def cascade(cases, true_negative=0.95, cap_usd=None):
     """Small tier first; step up to frontier when the check fails."""
-    small = call_usd("small", PREFIX, REPLY)
+    # every task pays for the small answer AND its check: a judge is
+    # a model call too, priced like any other
+    first_usd = (call_usd("small", PREFIX, REPLY)
+                 + call_usd("small", CHECK_TOKENS, 10))
     big = call_usd("frontier", PREFIX, REPLY)
     first_secs = SECONDS["small"] + SECONDS["check"]
     tasks, stepped, held, big_spend = [], 0, 0, 0.0
     for c in cases:
-        task = Task(first_secs, small, c.small_ok)
+        task = Task(first_secs, first_usd, c.small_ok)
         if not check_passes(c, true_negative):
             if cap_usd is not None and big_spend + big > cap_usd:
-                held += 1        # cap reached: flag it, no step up
+                held += 1        # cap reached: a person takes it
+                task = Task(first_secs, first_usd, False)
             else:
                 stepped += 1
                 big_spend += big
                 task = Task(first_secs + SECONDS["frontier"],
-                            small + big, c.big_ok)
+                            first_usd + big, c.big_ok)
         tasks.append(task)
     return tasks, stepped, held
 

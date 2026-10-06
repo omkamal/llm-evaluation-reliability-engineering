@@ -48,10 +48,12 @@ def check(items, roster):
     return out
 
 
-def single_hands(items, roster):
+def single_hands(items, roster, count_away=True):
     """Items that fewer than two people still here can do: the hero list.
-    Someone on holiday still counts; someone who left does not."""
-    here = {p.name for p in roster if not p.left}
+    Someone who left never counts; someone on holiday counts unless
+    count_away is False (the test of a holiday)."""
+    here = {p.name for p in roster
+            if not p.left and (count_away or not p.away)}
     return [i.name for i in items
             if len([n for n in i.responsible if n in here]) < 2]
 

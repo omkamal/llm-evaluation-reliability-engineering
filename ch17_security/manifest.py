@@ -1,15 +1,18 @@
-"""Pin the tools a server offers. A tool description is text the model
-reads, so a changed description is a changed instruction: review it like
-code, and refuse to run what no one has reviewed."""
+"""Pin the tools a server offers. A tool definition is text the model
+(or a person approving a call) reads, so a changed definition is a
+changed instruction: review it like code, and refuse to run what no one
+has reviewed. A pin is not trust: a pinned tool's RESULTS are still
+untrusted input, like any order note."""
 import hashlib
 import json
 
 
 def fingerprint(tool):
-    """A short hash of everything the model sees about one tool."""
-    shown = {k: tool[k] for k in ("name", "description", "schema")}
-    raw = json.dumps(shown, sort_keys=True).encode()
-    return hashlib.sha256(raw).hexdigest()[:12]
+    """The full SHA-256 of everything the server says about one tool:
+    name, title, description, inputSchema, outputSchema, annotations,
+    and any field added later. Change any of it and the pin breaks."""
+    raw = json.dumps(tool, sort_keys=True).encode()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def pin(tools):

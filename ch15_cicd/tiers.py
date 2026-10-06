@@ -38,13 +38,18 @@ def pick_sample(case_ids, never_fail, k, seed):
     return sorted(must + chosen)
 
 
-# The paths where a change can alter Relay's behaviour. Everything else
-# (a README, a stylesheet) does not need an eval.
+# The paths where a change can alter Relay's behavior, or the verdict:
+# the gate's own code, its packages and its workflow count too, since a
+# pull request runs its own copy of them. Everything else (a README, a
+# stylesheet) does not need an eval.
 TRIGGER_PATHS = (
     "ch15_cicd/relay/prompts/**",
     "ch15_cicd/relay/schemas/**",
     "ch15_cicd/relay/config/**",
     "ch15_cicd/relay/evals/**",
+    "ch15_cicd/*.py",
+    "requirements*.txt",
+    ".github/workflows/evals.yml",
 )
 
 

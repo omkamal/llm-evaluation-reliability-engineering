@@ -84,7 +84,7 @@ def test_the_friday_build_fails_two_never_fail_cases():
 
 
 # --- the Friday pull request, end to end -----------------------------------
-def friday_gate(tier, seed=3):
+def friday_gate(tier, seed=3, resamples=1000):
     with tempfile.TemporaryDirectory() as raw:
         tmp = Path(raw)
         root = demo.friday_pull_request(tmp)
@@ -93,7 +93,7 @@ def friday_gate(tier, seed=3):
         base = json.loads(run_tier.BASELINE.read_text())
         return gate.decide(base["cases"], results["cases"],
                            *check.load_rules()[:1],
-                           min_cases=20, resamples=1000), results
+                           min_cases=20, resamples=resamples), results
 
 
 def test_a_well_formed_friday_pull_request_still_gets_blocked():
@@ -103,6 +103,16 @@ def test_a_well_formed_friday_pull_request_still_gets_blocked():
     assert results["record"]["prompt"] == "system@8"
     assert result["verdict"] == "BLOCK"
     assert set(result["floor"]["failed"]) == {"T3.5", "T3.9"}
+
+
+def test_try_it_1_the_workflow_s_nightly_seed_blocks_on_four_rules():
+    result, _ = friday_gate("full", seed=0, resamples=10_000)
+    assert result["verdict"] == "BLOCK"
+    assert result["because"] == ["all", "policy", "non-trigger",
+                                 "never-fail"]
+    assert result["floor"]["failed"] == {"T3.5": 3, "T3.9": 3}
+    row = result["rows"][0]
+    assert (round(row["lo"], 3), round(row["hi"], 3)) == (-0.179, -0.030)
 
 
 def test_the_unchanged_main_build_is_not_blocked_at_full_strength():
@@ -116,22 +126,22 @@ def test_the_unchanged_main_build_is_not_blocked_at_full_strength():
 
 
 # --- the gate's own test (the numbers printed in the chapter) --------------
-def test_an_unchanged_build_is_almost_never_blocked():
+def test_an_unchanged_build_is_almost_never_blocked_and_never_passed():
     for tier in TIERS:
         counts = check.verdict_counts("main", tier)
-        assert counts["BLOCK"] <= 1
-    assert check.verdict_counts("main", "smoke") == {"WARN": 86, "PASS": 14}
+        assert counts["BLOCK"] <= 1 and counts["PASS"] == 0
+    assert check.verdict_counts("main", "smoke") == {"WARN": 99, "BLOCK": 1}
 
 
 def test_the_friday_tweak_is_blocked_at_every_tier():
-    assert check.verdict_counts("friday", "smoke")["BLOCK"] == 97
+    assert check.verdict_counts("friday", "smoke")["BLOCK"] == 96
     assert check.verdict_counts("friday", "full")["BLOCK"] == 100
     assert check.verdict_counts("friday", "release")["BLOCK"] == 100
 
 
 def test_at_smoke_strength_the_never_fail_rule_does_the_work():
     alone = check.verdict_counts("friday", "smoke", floor=False)
-    assert alone["BLOCK"] == 34
+    assert alone["BLOCK"] == 27
 
 
 def test_a_gate_that_blocks_on_doubt_blocks_nearly_every_healthy_build():
@@ -140,15 +150,23 @@ def test_a_gate_that_blocks_on_doubt_blocks_nearly_every_healthy_build():
 
 
 def test_chapter_3s_hard_line_blocks_healthy_builds_about_half_the_time():
-    blocks = [check.hard_line_blocks("main", t) for t in TIERS]
-    assert blocks == [56, 60, 63]
+    blocks = [check.hard_line_blocks("main", t, runs=1000) for t in TIERS]
+    assert blocks == [475, 483, 482]
+
+
+def test_against_one_fixed_baseline_the_count_is_that_file_s_luck():
+    fixed = [check.hard_line_blocks(
+        "main", "full", baseline=run_tier.run_tier("release", seed=s)[
+            "cases"]) for s in range(1, 7)]
+    assert fixed == [60, 21, 76, 65, 42, 92]
 
 
 def test_a_two_point_margin_is_below_what_90_cases_can_resolve():
     lows = check.lower_bounds("main", "full")
-    assert round(lows[4], 3) == -0.069          # 95 of 100 lie above
-    shares = [sum(low >= -m for low in lows) for m in (0.02, 0.05, 0.08)]
-    assert shares == [13, 71, 99]
+    assert round(lows[4], 3) == -0.077          # 95 of 100 lie above
+    shares = [sum(low >= -m for low in lows)
+              for m in (0.02, 0.05, 0.06, 0.07, 0.08)]
+    assert shares == [15, 72, 85, 94, 97]       # 0.06, 0.07: Try it 2
 
 
 # --- flaky cases -----------------------------------------------------------
@@ -166,6 +184,14 @@ def test_a_steady_failure_is_not_flaky():
     rates = flaky.pooled_rates(repeated_runs())
     assert rates["R-02"] < 0.4            # fails steadily: a real failure
     assert "R-02" not in flaky.flaky_cases(repeated_runs())
+
+
+def test_a_never_fail_case_is_never_quarantined():
+    run = repeated_runs(runs=1)[0]
+    with pytest.raises(ValueError, match="never-fail"):
+        flaky.apply_quarantine(run, {"T3.5": {"owner": "Priya",
+                                              "until": "2026-10-02"}},
+                               "2026-09-28")
 
 
 def test_a_quarantine_expires():
@@ -194,17 +220,45 @@ def test_the_cache_pays_once_per_key():
     assert (cache.hits, cache.misses) == (1, 1)
 
 
+CASE = {"id": "R-01", "text": "Can I return a kettle?"}
+
+
 def test_every_trial_has_its_own_key_or_noise_disappears():
-    keys = {budget.ResultCache.key("m", "p", "s", "R-01", t)
-            for t in range(5)}
+    files = repo.snapshot()
+    keys = {budget.answer_key(files, CASE, t) for t in range(5)}
     assert len(keys) == 5
+    assert len({budget.answer_key(files, CASE, 0) for _ in range(5)}) == 1
 
 
-def test_a_prompt_or_schema_edit_invalidates_the_cache():
-    base = budget.ResultCache.key("m", "system@7", "s1", "R-01", 0)
-    assert base != budget.ResultCache.key("m", "system@8", "s1", "R-01", 0)
-    assert base != budget.ResultCache.key("m", "system@7", "s2", "R-01", 0)
-    assert base != budget.ResultCache.key("m2", "system@7", "s1", "R-01", 0)
+def edited(path, old, new):
+    files = repo.snapshot()
+    return {**files, path: files[path].replace(old, new)}
+
+
+def test_the_key_hashes_texts_not_labels():
+    base = budget.answer_key(repo.snapshot(), CASE, 0)
+    changes = [
+        edited("prompts/system.md", "When you are not sure,",
+               "If you are unsure,"),                  # no version bump
+        edited("config/relay.json", "0.2", "0.3"),       # temperature
+        edited("config/relay.json", "index v3", "index v4"),
+        edited("config/relay.json", "a-large-v1", "a-large-v2"),
+        edited("schemas/reset_password.json", "Start", "Begin"),
+        edited("evals/judge_examples.txt", "Customer", "Client"),
+    ]
+    for files in changes:
+        assert budget.answer_key(files, CASE, 0) != base
+    reworded = {**CASE, "text": "Can I return a toaster?"}
+    assert budget.answer_key(repo.snapshot(), reworded, 0) != base
+
+
+def test_files_that_do_not_shape_an_answer_keep_the_cache_warm():
+    base = budget.answer_key(repo.snapshot(), CASE, 0)
+    for path in ("PROMPT_CHANGE.md", "prompts/CHANGELOG.md",
+                 "evals/thresholds.json"):
+        files = repo.snapshot()
+        files[path] += "\n"
+        assert budget.answer_key(files, CASE, 0) == base
 
 
 # --- bisect ----------------------------------------------------------------
@@ -222,7 +276,7 @@ def test_bisect_of_one_change_needs_no_eval():
 def test_bisect_with_the_real_gate_finds_the_friday_sentence(capsys):
     demo.show_bisect()
     out = capsys.readouterr().out
-    assert "culprit: prompt 9: be more proactive" in out
+    assert "culprit: prompt 8: be more proactive" in out
     assert "found in 3 evals, not 8" in out
 
 
@@ -254,6 +308,23 @@ def test_a_judge_example_can_leak_too():
     assert any(where == "judge_example_1" for _, where, _ in leaks)
 
 
-def test_a_neutral_change_needs_577_cases_to_clear_two_points():
-    from math import ceil
-    assert ceil(1.96 ** 2 * 0.06 / 0.02 ** 2) == 577
+def test_a_neutral_change_needs_577_cases_half_the_time_1178_most():
+    from ch04_numbers.power import Z_INTERVAL_ONLY, cases_needed
+    assert cases_needed(0.02, 0.06, z=Z_INTERVAL_ONLY) == 577   # 50%
+    assert cases_needed(0.02, 0.06) == 1178                     # 80%
+
+
+# --- a stale baseline -----------------------------------------------------
+def test_the_committed_baseline_matches_main_s_files():
+    assert run_tier.stale() == []
+
+
+def test_a_baseline_from_other_files_is_stale(tmp_path, capsys):
+    root = tmp_path / "relay"
+    shutil.copytree(repo.ROOT, root)
+    prompt = root / "prompts/system.md"
+    prompt.write_text(prompt.read_text().replace("version: 7",
+                                                 "version: 8"))
+    assert run_tier.stale(root) == ["prompt system@7 to system@8"]
+    assert run_tier.main(["--check-baseline", "--sample", "50",
+                          "--out", str(tmp_path / "s.json")]) == 0

@@ -75,13 +75,13 @@ def show_paths():
 def show_tiers():
     meta = suite.case_meta()
     never = {c["id"] for c in meta if c["never_fail"]}
-    say("tier     cases  trials  runs    cost  budget")
+    say("tier     cases  each  trials    cost  budget")
     for name, tier in TIERS.items():
         ids = pick_sample([c["id"] for c in meta], never, tier.sample, 0)
-        runs = sum(tier.safety_trials or tier.trials if i in never
-                   else tier.trials for i in ids)
-        cost = budget.run_cost("a-large", runs)
-        say(f"{name:<8}{len(ids):>5}{tier.trials:>8}{runs:>6}"
+        trials = sum(tier.safety_trials or tier.trials if i in never
+                     else tier.trials for i in ids)
+        cost = budget.run_cost("a-large", trials)
+        say(f"{name:<8}{len(ids):>5}{tier.trials:>6}{trials:>8}"
             f"{'$%.2f' % cost:>8}{'$%.2f' % budget.BUDGETS[name]:>8}")
     big = budget.run_cost("a-large", 500 * 3)
     ok = "within" if budget.within_budget("full", big) else "over"
@@ -129,7 +129,7 @@ def show_tenant():
         shutil.copytree(repo.ROOT, root)
         config = root / "config/relay.json"
         config.write_text(config.read_text().replace(
-            '"eval-ci", "kind": "test"', '"parcelpath-prod", "kind": "live"'))
+            '"eval-ci", "kind": "test"', '"crateway-prod", "kind": "live"'))
         try:
             run_tier.run_tier("smoke", root=root)
         except LiveTenantError as error:
@@ -159,11 +159,12 @@ def show_a_a():
     for name in TIERS:
         same = check.verdict_counts("main", name)
         friday = check.verdict_counts("friday", name)
-        hard.append(f"{name} {check.hard_line_blocks('main', name)}")
+        blocks = check.hard_line_blocks("main", name, runs=1000)
+        hard.append(f"{name} {blocks}")
         say(f"{name:<12}{same['PASS']:>4}{same['WARN']:>5}"
             f"{same['BLOCK']:>6}{friday['PASS']:>8}{friday['WARN']:>5}"
             f"{friday['BLOCK']:>6}")
-    say(f"hard line blocks an unchanged build: {', '.join(hard)}")
+    say(f"hard line, of 1,000 unchanged builds: {', '.join(hard)}")
     alone = check.verdict_counts("friday", "smoke", floor=False)
     say(f"smoke, never-fail rule left out: Friday blocked "
         f"{alone['BLOCK']} of 100")
@@ -201,18 +202,17 @@ def show_flaky():
 def show_cache():
     meta = suite.case_meta()
     cache = budget.ResultCache()
-    schemas = repo.schema_hash()
+    files = repo.snapshot()
     for attempt in ("first run", "re-run of the same commit"):
         for case in meta[:50]:
-            key = cache.key("a-large-v1", "system@7", schemas,
-                            case["id"], 0)
-            cache.get(key, lambda: 1)
+            cache.get(budget.answer_key(files, case, 0), lambda: 1)
         say(f"{attempt}: {cache.misses} misses, {cache.hits} hits so far")
-    changed = cache.key("a-large-v1", "system@7", "other", "R-01", 0)
-    say(f"a tool schema edited: key found in cache: "
-        f"{changed in cache.store}")
-    keys = {cache.key("a-large-v1", "system@7", schemas, "R-01", t)
-            for t in range(5)}
+    edited = dict(files)
+    edited["prompts/system.md"] = files["prompts/system.md"].replace(
+        "When you are not sure,", "If you are unsure,")
+    found = budget.answer_key(edited, meta[0], 0) in cache.store
+    say(f"a prompt edit with no version bump: key found in cache: {found}")
+    keys = {budget.answer_key(files, meta[0], t) for t in range(5)}
     say(f"5 trials of one case: {len(keys)} cache keys")
 
 
@@ -223,16 +223,16 @@ EDITS = [
     ("schemas: clearer reset_password text",
      lambda f: {**f, "schemas/reset_password.json": f[
          "schemas/reset_password.json"].replace("Start", "Begin")}),
-    ("prompt 8: reword the hand-off line",
+    ("prompt 8: be more proactive",
      lambda f: {**f, "prompts/system.md": f["prompts/system.md"].replace(
          "version: 7", "version: 8").replace(
-         "When you are not sure,", "If you are unsure,")}),
+         "Never reset", FRIDAY + "Never reset")}),
     ("docs: add a rollback line to the template",
      lambda f: {**f, "PROMPT_CHANGE.md": f["PROMPT_CHANGE.md"] + "\n"}),
-    ("prompt 9: be more proactive",
+    ("prompt 9: reword the hand-off line",
      lambda f: {**f, "prompts/system.md": f["prompts/system.md"].replace(
          "version: 8", "version: 9").replace(
-         "Never reset", FRIDAY + "Never reset")}),
+         "When you are not sure,", "If you are unsure,")}),
     ("schemas: add a window format",
      lambda f: {**f, "schemas/reschedule_delivery.json": f[
          "schemas/reschedule_delivery.json"].replace(

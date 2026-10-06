@@ -152,8 +152,8 @@ RELAY_HAS = {
     "calibrated judge", "state check on the riskiest tool",
     "SLO sheet and burn-rate pages", "bounded retries and budgets",
     "traces", "eval gate and staged releases",
-    "one accountable owner per item", "kill switch and pin, drilled",
-    "readiness review each quarter",
+    "guard before every tier 2 tool", "kill switch and pin, drilled",
+    "one accountable owner per item",
 }
 
 FINDINGS = (
@@ -163,14 +163,15 @@ FINDINGS = (
             "2026-09-15", True, "INJ-01 INJ-02 INJ-03"),
     Finding("incident", "kill switch and pin, drilled", "Priya",
             "2026-09-22", True, "D-KILL-01"),
-    Finding("incident", "page on credits outside band", "Priya",
-            "2026-09-24", True, "A-CRED-01"),
+    Finding("incident", "page on any credit that skipped a person",
+            "Priya", "2026-09-24", True, "A-CRED-01"),
     Finding("incident", "scoped credentials for issue_refund", "Lena",
             "2026-10-02", False, "G-SCOPE-01"),
     Finding("near miss", "a tool-description edit nearly skipped the "
             "gate", "Sam", "2026-09-03", True, "gate path test"),
     Finding("near miss", "Provider B status mail went to a leaver",
-            "Priya", "2026-09-18", True, "weekly ownership check"),
+            "Priya", "2026-09-18", True,
+            "weekly roster check, from 5 Oct"),
     Finding("game day", "failover held, the page linked a dead runbook",
             "Priya", "2026-05-28", False, ""),
 )

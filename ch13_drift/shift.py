@@ -2,11 +2,16 @@
 
 Three questions, three tools. PSI says how BIG a shift in a category mix
 is. Chi-square says whether a shift in category counts could be chance.
-Kolmogorov-Smirnov says whether two samples of a NUMBER (length, steps,
-latency) could come from the same distribution.
+Kolmogorov-Smirnov says whether two samples of a NUMBER with many
+distinct values (length, latency) could come from one distribution; a
+small count such as steps per task has too many ties for it.
+PSI is one number for the whole mix, so it dilutes a big move in one
+category: `tool_shares` gives each action tool its own rate band.
 """
 from collections import Counter
 from math import erfc, exp, lgamma, log, sqrt
+
+from ch13_drift.bands import check_rate
 
 FLOOR = 1e-4        # a share of exactly zero would make log() blow up
 
@@ -43,6 +48,16 @@ def check_segment(base, now, categories, min_calls=500):
     word = ("shifted" if score > shifted
             else "watch" if score > watch else "stable")
     return score, word
+
+
+def tool_shares(base, now, tools):
+    """Each tool's share of calls before and now, and a band verdict."""
+    out = {}
+    for tool in tools:
+        before = base.count(tool) / len(base)
+        out[tool] = (before, now.count(tool) / len(now),
+                     check_rate(before, now.count(tool), len(now)))
+    return out
 
 
 def chi_square(base, now, categories):

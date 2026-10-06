@@ -1,5 +1,8 @@
-# Relay chat availability: 99.5% over 28 days, so the budget is 0.005.
-# Counter: relay_chats_total{outcome="ok"|"error"}.
+# Relay chat availability: 99.5% over 28 days, so the error budget is
+# 0.005. Counter: relay_chats_total{outcome="ok"|"error"}, customer chats
+# only; synthetic deep checks count on their own metric, never on this.
+# No `for:` hold: as in the Python model, the short window filters blips.
+# Each alert also needs 100 chats in its long window (the floor).
 groups:
 - name: relay-slo-ratios
   rules:
@@ -31,7 +34,8 @@ groups:
       relay:chat_errors:ratio_rate1h > (14.4 * 0.005)
       and
       relay:chat_errors:ratio_rate5m > (14.4 * 0.005)
-    for: 2m
+      and
+      sum(increase(relay_chats_total[1h])) >= 100
     labels:
       severity: page
     annotations:
@@ -42,7 +46,8 @@ groups:
       relay:chat_errors:ratio_rate6h > (6 * 0.005)
       and
       relay:chat_errors:ratio_rate30m > (6 * 0.005)
-    for: 2m
+      and
+      sum(increase(relay_chats_total[6h])) >= 100
     labels:
       severity: page
     annotations:
@@ -53,7 +58,8 @@ groups:
       relay:chat_errors:ratio_rate3d > (1 * 0.005)
       and
       relay:chat_errors:ratio_rate6h > (1 * 0.005)
-    for: 15m
+      and
+      sum(increase(relay_chats_total[3d])) >= 100
     labels:
       severity: ticket
     annotations:

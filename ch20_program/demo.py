@@ -22,8 +22,10 @@ def demo_owners():
         print(f"{label}: {len(found) or 'no'} problems")
         for problem in found:
             print(f"  {problem}")
-        print(f"  one pair of hands: "
-              f"{len(single_hands(sheet, rd.ROSTER))} of {len(sheet)}")
+        hands = len(single_hands(sheet, rd.ROSTER))
+        away = len(single_hands(sheet, rd.ROSTER, count_away=False))
+        print(f"  one pair of hands: {hands} of {len(sheet)}, "
+              f"{away} with Sam away")
     load = accountable_load(rd.AFTER)
     print("answers for: " + ", ".join(
         f"{who} {n}" for who, n in sorted(load.items())))
@@ -68,7 +70,7 @@ def demo_readiness():
     for label, day, answers in (
             ("eve of INC-6", date(2026, 9, 9), rd.EVE_OF_INC6),
             ("today", rd.TODAY, rd.NOW)):
-        verdict, reasons = review(QUESTIONS, answers, day)
+        verdict, reasons = review(QUESTIONS, answers, day, rd.ROSTER)
         print(f"{label}: {verdict}")
         for why in reasons:
             print(fill(why, 64, initial_indent="  ",
@@ -96,7 +98,7 @@ def demo_findings():
     for item, late in overdue(f, rd.TODAY):
         print(f"overdue {late} days: {item.text} ({item.owner})")
     for item in without_case(f):
-        print(f"no regression case: {item.text}")
+        print(f"no lasting check: {item.text}")
 
 
 def demo_report():
@@ -109,29 +111,31 @@ def demo_report():
     _, high = expected_loss_avoided(1000, 0.05, 400, 1.50)
     sections = [
         ("What it costs", [
-            Line("Cost per resolved task: $0.028, promised under $0.06."),
+            Line("Cost per resolved task: $0.028, promised under $0.06.",
+                 "measured"),
             Line(f"Pages: {len(pages)}, {night} at night, for two people "
-                 "on call half the time."),
+                 "on call half the time.", "measured"),
             Line(f"Time on them: {hours:.1f} engineer-hours, at 30 minutes "
                  "a page.", "assumed")]),
         ("What it protects", [
-            Line("Promises kept: 9 of 10."),
+            Line("Promises kept: 9 of 10.", "measured"),
             Line("INC-6: found after 38 minutes, contained 30 minutes "
-                 "later."),
-            Line("If it came back: 7 minutes open, not 68. A page in 5 "
+                 "later.", "measured"),
+            Line("If it came back: 7 minutes open, not 68. Declared in 5 "
                  "and the 2-minute runbook.", "assumed"),
             Line(f"Reviewing 1,000 large credits costs ${spend:,.0f} "
-                 f"and avoids ${saved:,.0f} of expected loss at a 2% "
-                 f"error rate, ${low:,.0f} to ${high:,.0f} at 0.8% to "
-                 "5%.", "assumed")]),
+                 f"and avoids up to ${saved:,.0f} of expected loss at a "
+                 f"2% error rate (${low:,.0f} to ${high:,.0f} at 0.8% "
+                 "to 5%), if every review catches the error.",
+                 "assumed")]),
         ("What we still carry", [
             Line("Findings closed: 6 of 8. Open: scoped credentials, a "
                  "dead runbook link. Three named risks, each with an "
-                 "owner and a date.")]),
+                 "owner and a date.", "measured")]),
         ("What we need from you", [
             Line("A decision: two more people on the rota, so that "
                  "nobody carries the pager more than a quarter of "
-                 "the days.")]),
+                 "the days.", "measured")]),
     ]
     for text in render("Relay program report, 28 days to 4 October 2026",
                        sections):

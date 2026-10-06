@@ -2,8 +2,11 @@
 
 A query is *answerable* when `gold` names at least one document. `must` are
 the facts a correct answer has to state (written before any run, as in
-Chapter 3). Unanswerable queries have no gold document: the right answer is
-"I don't know".
+Chapter 3). Fact recall credits a fact wherever it appears, so each is
+worded to appear on no wrong page that comes back (a test checks).
+Unanswerable queries have no gold document: the right answer is "I don't
+know". The queries were written beside the pages, which flatters any
+search; real ones come from customers (Chapter 7).
 """
 from dataclasses import dataclass
 
@@ -71,15 +74,17 @@ QUERIES = [
       "$60"),
     q("Q27", "How much do I need to spend to avoid shipping fees?",
       "free-shipping", "$60"),
-    q("Q28", "Can I talk to a person?", "support-hours", "8:00"),
-    q("Q29", "What are your support hours?", "support-hours", "8:00"),
-    q("Q30", "Is anyone available at night?", "support-hours", "8:00"),
+    q("Q28", "Can I talk to a person?", "support-hours", "8:00 to 20:00"),
+    q("Q29", "What are your support hours?", "support-hours",
+      "8:00 to 20:00"),
+    q("Q30", "Is anyone available at night?", "support-hours",
+      "8:00 to 20:00"),
     # eight harder phrasings: different words for the same ideas
     q("Q31", "Can I still return something I bought last week?", "returns",
       "14 days"),
     q("Q32", "Money back for a smashed item?", "damaged", "7 days"),
     q("Q33", "Is there a fee to move my delivery to another day?",
-      "reschedule", "free"),
+      "reschedule", "Rescheduling is free"),
     q("Q34", "How many hours long is a delivery window?",
       "delivery-windows", "two-hour"),
     q("Q35", "At what amount does a refund need sign-off?",
@@ -101,7 +106,7 @@ QUERIES = [
     q("Q42", "My parcel is lost and I want an $80 refund: what happens?",
       "lost-parcel refund-approval", "5 business days", "$50"),
     q("Q43", "It is late evening and my parcel is lost: who can help?",
-      "lost-parcel support-hours", "5 business days", "8:00"),
+      "lost-parcel support-hours", "5 business days", "8:00 to 20:00"),
     q("Q44", "Is my order eligible for free shipping, and can I still "
       "change the address?", "free-shipping address-change", "$60",
       "out for delivery"),

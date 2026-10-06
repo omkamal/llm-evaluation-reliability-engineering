@@ -1,4 +1,4 @@
-"""A toy policy corpus: ParcelPath's ten policies as short, dated documents.
+"""A toy policy corpus: Crateway's ten policies as short, dated documents.
 
 Everything here is invented for the book (the ten policies come from the
 policy sheet; the wording around them is ours). `ALL_VERSIONS` keeps old
@@ -24,7 +24,7 @@ def _doc(id, title, version, updated, text):
 DOCS = [
     _doc("returns", "Returns", 3, date(2026, 6, 10), """
         You can send an unused item back to us for a return. Open the order
-        in the ParcelPath app, choose Return item, and we will email you a
+        in the Crateway app, choose Return item, and we will email you a
         label. Pack the item the way it arrived and hand it to the carrier.
         Returns are accepted for unused items within 14 days of delivery.
         Items that have been used cannot be returned. When your parcel
@@ -80,7 +80,7 @@ DOCS = [
         Outside agent hours Relay can pass your request to a human agent,
         who will pick it up when the team is back at 8:00."""),
     _doc("help-centre", "Help centre", 1, date(2026, 1, 15), """
-        Welcome to the ParcelPath help centre. Choose a topic to find the
+        Welcome to the Crateway help centre. Choose a topic to find the
         policy you need: returns, refund timing, damaged on arrival,
         rescheduling a delivery, delivery windows, lost parcels, refund
         approval, changing the delivery address, free shipping and support

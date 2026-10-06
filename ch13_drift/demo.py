@@ -4,8 +4,9 @@ from datetime import date
 
 from ch08_rag.corpus import DOCS
 from ch08_rag.lifecycle import freshness_alarm
-from ch13_drift.alerts import (ALERT_LOG, group_incidents,
-                               median_alert_days, review, route)
+from ch13_drift.alerts import (ALERT_LOG, fortnight_false_alarms,
+                               group_incidents, median_alert_days, review,
+                               route)
 from ch13_drift.bands import (check_rate, false_alarm_rate, first_alert,
                               noise_band, rate_band)
 from ch13_drift.online import judged_by_segment
@@ -13,12 +14,12 @@ from ch13_drift.probe import (ALIAS, CASES, EXPERT, flipped_topics,
                               judge_band, judged_rate, monthly_kappa,
                               rerun_judge, run_probe, snapshot_behind)
 from ch13_drift.rag_drift import drift_table, make_index
-from ch13_drift.relay_sim import (SEGMENTS, SIGNALS, TOOLS, input_chars,
-                                  tool_calls, weekly_decay,
-                                  week_of_conversations)
+from ch13_drift.relay_sim import (ACTION_TOOLS, BASE_MIX, SEGMENTS,
+                                  SIGNALS, TOOLS, input_chars, tool_calls,
+                                  weekly_decay, week_of_conversations)
 from ch13_drift.shift import (check_segment, chi2_sf, chi_square,
                               ks_p_value, ks_statistic, psi,
-                              psi_noise_floor, shares)
+                              psi_noise_floor, shares, tool_shares)
 
 
 def pct(x):
@@ -51,8 +52,13 @@ def show_bands():
     print(f"alert on week {alert}: two windows in a row")
     for k in (1, 2):
         rate = false_alarm_rate(0.91, 1000, 16, k)
-        print(f"clean 16 weeks, {k} outside to alert: "
-              f"false alarm in {100 * rate:.0f}% of 1000 runs")
+        print(f"clean 16 weeks, {k} below to alert: "
+              f"false alarm in {100 * rate:.1f}% of 10,000 runs")
+    lo, hi = rate_band(0.81, 30000)
+    plain, wide = fortnight_false_alarms()
+    print(f"clean fortnights at 30,000 a day, days 1 point apart: "
+          f"band {pct(lo)} to {pct(hi)} alerts in {100 * plain:.0f}%, "
+          f"band from 28 past days in {100 * wide:.0f}%")
 
 
 def show_segments():
@@ -90,6 +96,18 @@ def show_shift():
         1 / len(base) + 1 / len(now))
     print(f"EU email: chi-square {stat:.1f}; "
           f"PSI / (1/n_base + 1/n_now) = {scaled:.1f}")
+    for seg in (SEGMENTS[1], SEGMENTS[0]):
+        base_s, now_s = tool_calls(seg)
+        score = psi(shares(base_s, TOOLS), shares(now_s, TOOLS))
+        for tool, (before, after, word) in tool_shares(
+                base_s, now_s, ACTION_TOOLS).items():
+            if word != "inside":
+                print(f"{seg.name}, PSI {score:.2f}: {tool} "
+                      f"{pct(before)}% to {pct(after)}%, {word} its band")
+    jump = [0.37 if t == "reschedule_delivery" else s * 0.63 / 0.82
+            for t, s in zip(TOOLS, BASE_MIX)]
+    print(f"reschedule_delivery 18% to 37%, the rest shrunk to fit: "
+          f"PSI {psi(BASE_MIX, jump):.2f}")
     floor = psi_noise_floor(len(TOOLS), len(base), 140)
     print(f"noise floor, 5 tools, 140 calls: PSI {floor:.3f}")
     print(check_segment(base[:3000], now[:140], TOOLS)[1])
@@ -117,7 +135,7 @@ def show_lengths():
 def show_probe():
     rng = random.Random(11)
     runs = [run_probe("a-large-v1", rng)[0] for _ in range(10)]
-    lo, hi = noise_band(runs)
+    lo, hi = noise_band(runs, floor=1 / len(CASES))   # at least one case
     hi = min(hi, 1.0)
     print(f"A/A band, 10 runs of a-large-v1: {lo:.2f} to {hi:.2f}")
     rng = random.Random(1)
@@ -167,8 +185,8 @@ def show_judge():
     print(f"re-run at once: kappa {cohen_kappa(again, EXPERT):.2f}")
     before = judged_rate(0.75, 0.93, 0.92)
     after = judged_rate(0.75, 0.93, 0.70)
-    print(f"judged good rate, true rate fixed at 75%: "
-          f"{pct(before)} to {pct(after)}")
+    print(f"judged good rate, true 75%: "
+          f"{pct(before)} before, {pct(after)} after")
 
 
 def show_rag():
@@ -194,6 +212,7 @@ def show_alerts():
         print(f"{sig.name:<25} {sig.kind:<8} {day:>4.0f}   "
               f"({runs} of 500 runs)")
     cases = [("refund share up, 2 windows", True, True),
+             ("refund share up, 1 window", True, False),
              ("one segment's good rate down, 2 days", False, True),
              ("answer length up, 1 window", False, False)]
     for label, money, held in cases:

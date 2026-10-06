@@ -5,14 +5,16 @@ class Hysteresis:
     """Leave the primary at 20% errors; return only when calm, slowly."""
 
     def __init__(self, clock, leave=20.0, back=5.0, hold=300.0,
-                 step=240.0, ramp=(0.1, 0.5, 1.0)):
+                 step=240.0, ramp=(0.1, 0.5, 1.0), settle=3600.0):
         self.clock = clock
         self.leave, self.back, self.hold = leave, back, hold
-        self.step, self.ramp = step, ramp
+        self.step, self.ramp, self.settle = step, ramp, settle
+        self.wait = hold           # calm needed now; doubles on relapse
         self.share = 1.0           # share of traffic sent to the primary
         self.calm_since = None     # when errors last fell to `back`
         self.rung = None           # position on the ramp, if climbing
         self.rung_at = 0.0
+        self.back_at = None        # when the last return began
         self.log = []              # (time, share) at every change
 
     def _set(self, share):
@@ -20,26 +22,36 @@ class Hysteresis:
             self.share = share
             self.log.append((self.clock.now(), share))
 
+    def _away(self):
+        self._set(0.0)
+        self.calm_since = self.rung = None
+
     def observe(self, error_pct):
         now = self.clock.now()
         if error_pct >= self.leave:            # leaving is immediate
-            self._set(0.0)
-            self.calm_since = self.rung = None
+            if self.share > 0 and self.back_at is not None:
+                self.wait *= 2                 # failed again soon after
+            self._away()
         elif self.share == 0.0:                # away: wait for calm
             if error_pct > self.back:
                 self.calm_since = None         # the calm must be unbroken
             elif self.calm_since is None:
                 self.calm_since = now
-            elif now - self.calm_since >= self.hold:
+            elif now - self.calm_since >= self.wait:
                 self.rung, self.rung_at = 0, now
+                self.back_at = now
                 self._set(self.ramp[0])
         elif self.rung is not None:            # climbing back
-            if error_pct <= self.back and now - self.rung_at >= self.step:
+            if error_pct > self.back:
+                self._away()                   # between the lines: wait
+            elif now - self.rung_at >= self.step:
                 self.rung += 1
                 self.rung_at = now
                 self._set(self.ramp[self.rung])
                 if self.rung == len(self.ramp) - 1:
                     self.rung = None
+        elif self.back_at is not None and now - self.back_at >= self.settle:
+            self.wait, self.back_at = self.hold, None   # forgiven
         return self.share
 
 
@@ -59,14 +71,20 @@ class SingleThreshold:
         return self.share
 
 
-def plan_shift(demand, free_slots,
+def plan_shift(demand, free_slots, held=0,
                order=("eu_chat", "chat", "background")):
-    """Fill the backup's free slots in priority order; the rest waits."""
-    placed = {}
+    """Fill the backup's free slots in priority order; the rest waits.
+    `held` slots are for EU chats only, as the router enforces them."""
+    placed, spill_room = {}, free_slots - held
     for lane in order:
-        take = min(demand.get(lane, 0), free_slots)
+        room = free_slots
+        if lane != "eu_chat":
+            room = min(room, spill_room)
+        take = min(demand.get(lane, 0), room)
         placed[lane] = take
         free_slots -= take
+        if lane != "eu_chat":
+            spill_room -= take
     overflow = {lane: demand.get(lane, 0) - placed[lane]
                 for lane in order}
     return placed, overflow

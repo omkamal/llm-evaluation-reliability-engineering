@@ -24,7 +24,11 @@ class Change:
 
 
 def release_check(change, left, risky_in_flight=0):
-    """(decision, reason) for one change, given the budget left (0 to 1)."""
+    """(decision, reason) for one change, given the error budget left.
+
+    The ladder only tightens as the error budget falls: below a quarter
+    only fixes ship, and at zero that rule still holds.
+    """
     rung = policy_rung(left)
     if change.kind in FIXES:
         return "ship", "a fix: allowed on every rung"
@@ -34,8 +38,6 @@ def release_check(change, left, risky_in_flight=0):
         if change.risky and risky_in_flight:
             return "hold", "another risky change is already in flight"
         return "ship", f"{left:.0%} left, nothing else risky in flight"
-    if rung == "reliability fixes only":
-        return "hold", f"{left:.0%} left: reliability fixes only"
-    if change.risky:
+    if change.risky and rung == "freeze risky releases":
         return "hold", "error budget spent: risky releases frozen"
-    return "ship", "error budget spent, but this change is routine"
+    return "hold", f"{left:.0%} left: reliability fixes only"

@@ -7,7 +7,7 @@ class Day:
     first_pass: int          # valid on the first try
     repaired: int            # failed first, fixed by repair
     truncated: int           # cut off by the token limit
-    terminal: int            # ended in a typed failure
+    terminal: int            # still invalid after repair
 
     @property
     def total(self):

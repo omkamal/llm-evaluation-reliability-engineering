@@ -15,7 +15,8 @@ CACHED = [
     ("refund_timing", "How long until my refund arrives after a return?",
      "5 business days after we receive the item."),
     ("refund_limit", "What is the largest refund Relay can issue itself?",
-     "$50; above that a person approves."),
+     "$50 a refund, $100 a customer a day; above either, a person "
+     "approves."),
     ("free_shipping", "What order total gets free shipping?",
      "Orders over $60."),
     ("lost", "When does a parcel count as lost?",

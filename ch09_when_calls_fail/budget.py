@@ -3,6 +3,8 @@
 
 class RetryBudget:
     def __init__(self, ratio=0.1, burst=5.0):
+        if burst < 1:
+            raise ValueError("burst must hold at least one whole token")
         self.ratio, self.burst, self.tokens = ratio, burst, burst
 
     def record_request(self):                 # every request drips a little in

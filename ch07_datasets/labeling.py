@@ -7,6 +7,7 @@ label is a coin flip between two readings.
 import random
 from collections import Counter
 
+from ch04_numbers.stats import bootstrap_ci
 from ch05_judge.agreement import cohen_kappa, observed_agreement
 
 MOVES = ("answer", "act", "clarify", "hand_off")
@@ -48,6 +49,15 @@ def double_label(items, guideline, seed=5):
     return a, b, final
 
 
+def kappa_ci(a, b, resamples=2000, seed=0):
+    """95% bootstrap interval for kappa, as Chapter 5 reports a judge's."""
+    def kappa_of(pairs):
+        x, y = zip(*pairs)
+        return cohen_kappa(x, y)
+    return bootstrap_ci(list(zip(a, b)), resamples=resamples, seed=seed,
+                        stat=kappa_of)[1]
+
+
 def summary(items, guideline):
     a, b, final = double_label(items, guideline)
     truth = [i["truth"] for i in items]
@@ -55,6 +65,7 @@ def summary(items, guideline):
     return {
         "agreement": observed_agreement(a, b),
         "kappa": cohen_kappa(a, b),
+        "kappa_ci": kappa_ci(a, b),
         "disagreements": dict(sorted(split.items())),
         "adjudicated": sum(x != y for x, y in zip(a, b)),
         "final_right": observed_agreement(final, truth),

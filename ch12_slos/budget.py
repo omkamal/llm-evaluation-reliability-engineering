@@ -10,6 +10,8 @@ def error_budget(slo, volume):
 
 def burn_rate(bad, total, slo):
     """Observed error rate divided by the allowed one. 1.0 = on pace."""
+    if not 0 < slo < 1:
+        raise ValueError("an SLO of 100% leaves no error budget to burn")
     if not total:
         return 0.0
     return (bad / total) / (1 - slo)
@@ -32,6 +34,8 @@ def share_spent(burn, hours, window_days=WINDOW_DAYS):
 def budget_left(slo, volume, bad):
     """Fraction of the error budget still unspent (can go below zero)."""
     allowed = error_budget(slo, volume)
+    if not allowed:
+        raise ValueError("this SLO allows no failures at this volume")
     return (allowed - bad) / allowed
 
 

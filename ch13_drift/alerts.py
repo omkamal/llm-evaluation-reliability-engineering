@@ -1,8 +1,11 @@
 """Who is told what, how fast, and whether the alert was worth it."""
+import random
+from math import sqrt
 from statistics import median
 
-from ch13_drift.bands import first_alert, mean_band, rate_band
-from ch13_drift.relay_sim import SIGNALS, nine_days
+from ch13_drift.bands import (first_alert, mean_band, rate_band,
+                              segment_band)
+from ch13_drift.relay_sim import SIGNALS, clean_days, nine_days
 
 
 def alert_day(signal, series, k=2):
@@ -32,11 +35,31 @@ def median_alert_days(runs=500):
             for name, days in found.items()}
 
 
+def fortnight_false_alarms(runs=1000, swing=0.01, seed=0):
+    """Clean fortnights at 30,000 tasks a day whose days really differ
+    by `swing`: share that still raise a two-day drop alert, with the
+    standard-error band and with `segment_band` of the 28 days before."""
+    rng = random.Random(seed)
+    lo = rate_band(0.81, 30000)[0]
+    se = sqrt(0.81 * 0.19 / 30000)
+    plain = wide = 0
+    for _ in range(runs):
+        days = clean_days(rng, swing=swing)
+        past, now = days[:28], days[28:]
+        wide_lo = segment_band(past, se)[0]
+        plain += first_alert([d < lo for d in now]) is not None
+        wide += first_alert([d < wide_lo for d in now]) is not None
+    return plain / runs, wide / runs
+
+
 def route(touches_money_or_safety, persistent, enough_data=True):
-    """Page, ticket or dashboard. Persistence guards the page."""
-    if not (persistent and enough_data):
+    """Page, ticket or dashboard. Persistence guards the page, but a
+    single money or safety breach still opens a ticket."""
+    if not enough_data:
         return "dashboard"
-    return "page" if touches_money_or_safety else "ticket"
+    if touches_money_or_safety:
+        return "page" if persistent else "ticket"
+    return "ticket" if persistent else "dashboard"
 
 
 def group_incidents(alerts, window=2):
@@ -67,6 +90,7 @@ def review(log, bar=0.5):
     rows = []
     for rule, where, fired, acted in log:
         precision = acted / fired
-        verdict = "keep" if precision >= bar else "tighten"
+        verdict = ("dashboard" if acted == 0    # never worth a person
+                   else "keep" if precision >= bar else "tighten")
         rows.append((rule, where, fired, acted, precision, verdict))
     return rows

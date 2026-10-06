@@ -25,8 +25,13 @@ def apply_quarantine(results, quarantine, today):
     """Drop quarantined cases from the blocking rules, until they expire.
 
     Returns (kept, held). An entry past its date is not honoured: a
-    quarantine is a loan, not a pardon.
+    quarantine is a loan, not a pardon. A never-fail case is never
+    quarantined: fix it, or remove it in a reviewed change.
     """
+    floor = sorted(i for i in quarantine
+                   if results.get(i, {}).get("never_fail"))
+    if floor:
+        raise ValueError(f"never-fail cases cannot be quarantined: {floor}")
     held = {i for i, q in quarantine.items() if q["until"] >= today}
     kept = {i: c for i, c in results.items() if i not in held}
     return kept, sorted(held & set(results))

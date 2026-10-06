@@ -2,13 +2,16 @@
 from collections import Counter
 
 
-def balanced(text):
-    """True if every bracket and brace that was opened was also closed (ignoring strings)."""
+def _scan(text):
+    """Bracket depth left at the end, and whether a string is still open."""
     depth, in_str, esc = 0, False, False
     for ch in text:
         if in_str:
-            esc = (ch == "\\") and not esc
-            if ch == '"' and not esc:
+            if esc:                      # this character was escaped
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
                 in_str = False
             continue
         if ch == '"':
@@ -17,14 +20,27 @@ def balanced(text):
             depth += 1
         elif ch in "}]":
             depth -= 1
+    return depth, in_str
+
+
+def balanced(text):
+    """True if every bracket opened was closed, and none extra."""
+    depth, in_str = _scan(text)
     return depth == 0 and not in_str
+
+
+def unclosed(text):
+    """True if something was opened and never closed: the output stopped.
+    An extra closing bracket is a malformed reply, not a truncated one."""
+    depth, in_str = _scan(text)
+    return depth > 0 or in_str
 
 
 def classify(reply_text, finish_reason, output_tokens, max_tokens):
     """First question: did the output run out of room?"""
     if (finish_reason == "length" or output_tokens >= max_tokens
-            or not balanced(reply_text)):
-        return "truncation"   # fix the budget, not the repair loop
+            or unclosed(reply_text)):
+        return "truncation"   # raise the limit, not the repair loop
     return "validation"          # complete JSON that broke a rule
 
 

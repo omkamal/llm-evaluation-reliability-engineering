@@ -21,6 +21,22 @@ from ch11_traces.context import (MUST_KEEP, fields_lost, long_session,
 from ch11_traces.tracer import extract, inject
 from common.relay_fake import ask
 
+
+class NoJitter:
+    """Scripted run: wait exactly what Retry-After asks (Ch 9 adds jitter)."""
+    @staticmethod
+    def uniform(lo, hi):
+        return 0.0
+
+
+
+class NoJitter:
+    """Scripted run: wait exactly what Retry-After asks (Ch 9 adds jitter)."""
+    @staticmethod
+    def uniform(lo, hi):
+        return 0.0
+
+
 TODAY = date(2026, 10, 4)
 ORDER, WINDOW = "ORD-004829", "Thu 08:00-10:00"
 QUERY = "rescheduling a delivery"
@@ -55,7 +71,7 @@ class Crew:
                 replies = iter([(429, 1.0), (200, None)])
                 call_with_retry(lambda: next(replies), self.budget,
                                 self.clock.now() + 20, clock=self.clock,
-                                rng=self.rng, log=lambda m: sp.event(
+                                rng=NoJitter(), log=lambda m: sp.event(
                                     "retry", detail=m.strip()))
             self.clock.sleep(ms / 1000)
             sp.set({"gen_ai.operation.name": "chat",
@@ -150,11 +166,15 @@ class Crew:
 
 
 def flat_run(tracer, clock, session="conv-0388", calls=41, seed=41):
-    """The old instrumentation: a request span and one sibling per call."""
+    """The old instrumentation: one span for a whole conversation and a
+    sibling for every model call in it. Ten turns of about four calls,
+    each turn answered in a few seconds; the customer types in between."""
     rng = random.Random(seed)
-    with tracer.span("POST /chat", "request",
+    with tracer.span("conversation", "request",
                      attrs={"gen_ai.conversation.id": session}) as root:
-        for _ in range(calls):
+        for i in range(calls):
+            if i and i % 4 == 0 and i < calls - 1:
+                clock.sleep(rng.uniform(20, 60))   # the customer's turn
             tokens_in, tokens_out = rng.randint(1_500, 6_000), 150
             with tracer.span("chat a-large-v2", "llm") as sp:
                 clock.sleep(rng.uniform(0.8, 1.4))
@@ -188,9 +208,9 @@ def loop_run(tracer, clock, session="conv-0391"):
                 return agent
 
 
-def run_batch(tracer, clock, n=100, redact_hook=None):
+def run_batch(tracer, clock, n=100):
     """n conversations; every few carry a defect, as real fleets do."""
-    crew, hook = Crew(tracer, clock), tracer.on_end
+    crew, export = Crew(tracer, clock), tracer.export
     for i in range(n):
         faults = set()
         if i % 25 == 4:
@@ -198,8 +218,8 @@ def run_batch(tracer, clock, n=100, redact_hook=None):
         if i % 20 == 13:
             faults.add("no_usage")          # a client without usage data
         if i % 25 == 17:
-            faults.add("leak_email")        # a service with no edge hook
-        tracer.on_end = (lambda s: None) if "leak_email" in faults else hook
+            faults.add("leak_email")        # a service that skips redaction
+        tracer.export = (lambda s: s) if "leak_email" in faults else export
         crew.run(f"conv-{i:04d}", faults)
         if i % 20 == 9:                     # a worker died before flushing
             tracer.finished[:] = [s for s in tracer.finished
@@ -208,7 +228,7 @@ def run_batch(tracer, clock, n=100, redact_hook=None):
                                               "gen_ai.conversation.id"]
                                           == f"conv-{i:04d}")]
         clock.sleep(30)
-    tracer.on_end = hook
+    tracer.export = export
     return tracer.finished
 
 

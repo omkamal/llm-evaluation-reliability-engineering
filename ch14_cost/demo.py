@@ -24,8 +24,9 @@ from ch14_cost.finops import (Record, forecast_miss, monthly_bill,
                               showback, status)
 from ch14_cost.latency import (critical_path, first_words, parallel,
                                schedule, sequential, waterfall)
-from ch14_cost.levers import (batch_usd, compress, lane, reply_usd,
-                              saved_per_call, tokens)
+from ch14_cost.levers import (batch_usd, compress, lane,
+                              payback_calls, reply_usd, saved_per_call,
+                              tokens)
 from ch14_cost.prices import PRICES, call_usd
 from ch14_cost.prompt_cache import (PrefixCache, break_even_uses,
                                     equivalent_tokens)
@@ -60,7 +61,7 @@ def demo_eaters():
     base, extra = eaters()
     print(f"a task costs ${base:.4f}; each eater adds:")
     for name, usd in extra.items():
-        print(f"  {name:<46}${usd:.4f}  +{usd / base:.0%}")
+        print(f"  {name:<46}${usd:.4f}  +{usd / base:.1%}")
 
 
 def demo_forecast():
@@ -131,17 +132,25 @@ def demo_policies():
 
 
 def demo_routing():
-    print("== route by price, inside the rules")
+    print("== route inside the rules: Chapter 10's rank, cost last")
     catalog = make_catalog()
-    asks = [("summary, global customer", Request("global", 8_000, False), ()),
-            ("lookup_order, global", Request("global", 8_000, True), ()),
-            ("lookup_order, EU customer", Request("eu", 8_000, True), ()),
-            ("issue_refund planned", Request("global", 8_000, True),
-             ("issue_refund",)),
-            ("150,000-token EU chat", Request("eu", 150_000, True), ())]
-    for name, req, planned in asks:
+    full = make_catalog()
+    full[2].in_flight = full[2].limit           # B small has no room
+    armed = make_catalog()
+    armed[2].tools = True                       # B small gains tools
+    asks = [("summary, global customer", catalog,
+             Request("global", 8_000, False), ()),
+            ("summary, B small full", full,
+             Request("global", 8_000, False), ()),
+            ("lookup_order, EU customer", catalog,
+             Request("eu", 8_000, True), ()),
+            ("refund, small has tools", armed,
+             Request("global", 8_000, True), ("issue_refund",)),
+            ("150,000-token EU chat", catalog,
+             Request("eu", 150_000, True), ())]
+    for name, cat, req, planned in asks:
         try:
-            print(f"{name:<27}-> {route(catalog, req, planned)}")
+            print(f"{name:<27}-> {route(cat, req, planned)}")
         except NoEligibleProvider:
             print(f"{name:<27}-> none eligible: degrade")
 
@@ -243,8 +252,12 @@ def demo_levers():
         lost = fields_lost(MUST_KEEP, new) or "none"
         print(f"{name:<17}{tokens(turns):,} -> {tokens(new):,} tokens, "
               f"lost: {lost[0] if lost != 'none' else lost}")
-    print(f"each later call saves ${saved_per_call(31_800, 7_900):.4f} "
-          "of input")
+    plain = saved_per_call(31_800, 7_900)
+    cached = saved_per_call(31_800, 7_900, cached=True)
+    print(f"a later call saves ${plain:.4f} of input; "
+          f"${cached:.4f} if it was cached")
+    print("with the cache on, the summary pays for itself after "
+          f"{payback_calls(turns, new)} calls")
     essay = ("Thanks for reaching out! I have checked your order and I "
              "am sorry for the delay. The refund will reach you within "
              "five business days of us receiving the item.")

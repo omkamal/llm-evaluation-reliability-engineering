@@ -3,12 +3,14 @@
 A small share of live chats goes to the candidate, the rest to the
 control, at the same time. Guard metrics compare the two; the first
 guard that is clearly worse, or an error budget burning too fast,
-sends all traffic back. The clock is injected, so hours cost nothing.
+sends all traffic back. A step moves up after 30 minutes with nothing
+worse; the last step goes to everyone only when every guard is ok.
+The clock is injected, so hours cost nothing.
 """
 import random
 from dataclasses import dataclass, field
 
-from ch04_numbers.stats import difference_ci
+from ch04_numbers.stats import wilson_difference_ci
 from ch12_slos.burn import SLO, Rule, Series, window_burn
 from ch16_release.traffic import counts, make_chat
 
@@ -21,6 +23,7 @@ class Guard:
 
 
 GUARDS = (
+    Guard("failed chats", "failed", 0.005),
     Guard("invalid output", "invalid", 0.01),
     Guard("slow first token", "slow", 0.03),
     Guard("reschedule share", "acted", 0.05),
@@ -31,13 +34,19 @@ GUARDS = (
 BURN = Rule("rollback", 14.4, 1800, 300)
 
 
-def verdict(guard, canary, control, min_n=30):
-    """'worse', 'ok' or 'wait' for one guard: canary against control."""
+def verdict(guard, canary, control, min_n=30, z=2.58):
+    """'worse', 'ok' or 'wait' for one guard: canary against control.
+
+    A Wilson-based 99% interval (Chapter 4): the rule looks again every
+    five minutes, and each look is another chance for noise to cross
+    the line. 0 bad chats in 30 is not proof: the harsh end of that
+    interval is still about 18 points.
+    """
     bad_c, n_c = counts(canary, guard.flag)
     bad_k, n_k = counts(control, guard.flag)
     if n_c < min_n:
         return "wait"                          # too little to judge
-    _, (lo, hi) = difference_ci(bad_k, n_k, bad_c, n_c)
+    _, (lo, hi) = wilson_difference_ci(bad_k, n_k, bad_c, n_c, z)
     if lo > guard.margin:
         return "worse"       # even the kind end of the interval is bad
     if hi <= guard.margin:
@@ -98,16 +107,19 @@ class Canary:
             res.minutes, res.share = minute, share
             if in_step % check_every:
                 continue
+            says = [verdict(g, cn, ct) for g in self.guards]
             why = burning(series) or next(
-                (f"{g.name}: clearly worse" for g in self.guards
-                 if verdict(g, cn, ct) == "worse"), None)
+                (f"{g.name}: clearly worse"
+                 for g, v in zip(self.guards, says) if v == "worse"),
+                None)
             if why:
                 res.decision, res.reason = "rolled back", why
                 break
-            if in_step >= self.min_minutes and all(
-                    verdict(g, cn, ct) == "ok" for g in self.guards):
+            last = step + 1 == len(self.steps)
+            if in_step >= self.min_minutes and (
+                    not last or all(v == "ok" for v in says)):
                 res.log.append((minute, share))   # this step held
-                if step + 1 == len(self.steps):
+                if last:
                     res.decision, res.reason = "promoted", "all guards ok"
                     break
                 step, in_step, cn, ct = step + 1, 0, [], []

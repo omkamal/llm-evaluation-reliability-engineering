@@ -42,9 +42,11 @@ def show_flood():
           f"its limit is 40")
     print(f"naive failover: B gets {sum(demand.values())} chats, "
           f"{sum(demand.values()) // sum(normal.values())}x its load")
-    placed, over = plan_shift(demand, 40)
+    b = make_catalog()[1]
+    placed, over = plan_shift(demand, b.limit, b.held)
     taken = ", ".join(f"{k} {v}" for k, v in placed.items() if v)
-    print(f"controlled: B takes {taken} ({sum(placed.values())} of 40)")
+    print(f"controlled, {b.held} held for EU: B takes {taken} "
+          f"({sum(placed.values())} of {b.limit})")
     print(f"waiting or degrading: chat {over['chat']}")
 
 
@@ -136,6 +138,7 @@ def show_tiers():
     rows = []
     cat = make_catalog()
     rows.append(("A down, B has room", cat, MARIA, True))
+    rows.append(("B's breaker open", make_catalog(), MARIA, True))
     cat = make_catalog()
     cat[1].in_flight = 40
     rows.append(("B at its limit", cat, MARIA, True))
@@ -147,7 +150,8 @@ def show_tiers():
                  replace(MARIA, tokens=150_000), True))
     for label, c, req, db_up in rows:
         c[0].in_flight = c[0].limit        # Provider A is down for all
-        print(f"{label:33} tier {choose_tier(c, req, db_up)}")
+        down = {"Provider B"} if label.startswith("B's") else ()
+        print(f"{label:33} tier {choose_tier(c, req, db_up, down)}")
     blocked = []
     for tier in (1, 2):
         results = []
@@ -200,6 +204,10 @@ def show_streams():
     res = clock.run(consume(stream(FULL, clock), lambda s: None, clock))
     print(f"a whole stream: {res.status}, stop {res.stop}, "
           f"amount_cents {res.tool_call['amount_cents']}")
+    clock = VirtualClock()
+    capped = FULL[:3] + [("stop", "length")]       # hit max tokens
+    res = clock.run(consume(stream(capped, clock), lambda s: None, clock))
+    print(f"a token-limit stop: {res.status} ({res.why})")
 
 
 def show_recovery():
@@ -230,9 +238,9 @@ def show_cancellation():
     print(f"  owned: retry ran {log['retry_ran']}, "
           f"tool started {log['tool_started']}")
     clock, log = VirtualClock(), fresh_log()
-    clock.run(gateway(refund_step, log, clock, 0.2))
-    print(f"cancelled mid-payment at 0.2 s: refund {log['refund']}, "
-          f"status {log['status']}")
+    clock.run(gateway(refund_step, log, clock, 0.2, again=0.1))
+    print(f"cancelled at 0.2 s and again at 0.3 s: refund "
+          f"{log['refund']}, status {log['status']}")
     clock = FakeClock()
     breaker = CircuitBreaker(clock=clock)
     for _ in range(10):

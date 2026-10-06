@@ -11,6 +11,9 @@ PROMISE = re.compile(r"will be (fixed|resolved|restored|back)|\bETA\b",
 BLAME = re.compile(r"human error|careless|mistake by|fault of", re.I)
 DONE = re.compile(r"\b(is|has been|are now|now) (resolved|fixed|"
                   r"restored)\b", re.I)
+# "no other ... affected" is a guess until the check has run
+ALL_CLEAR = re.compile(r"\bno (one|other|further)\b[^.]*\baffected\b",
+                       re.I)
 # words a customer should never need to read
 JARGON = ("SEV", "prompt", "injection", "bundle", "flag", "model",
           "guardrail", "kill switch", "tool call")
@@ -46,6 +49,8 @@ def lint(update, audience, people=(), verified=False):
         out.append("points at a person")
     if DONE.search(text) and not verified:
         out.append("says fixed before recovery is verified")
+    if ALL_CLEAR.search(text) and not verified:
+        out.append("rules others out before the check is done")
     if audience == "customer":
         words = [w for w in JARGON if w.lower() in text.lower()]
         if words:

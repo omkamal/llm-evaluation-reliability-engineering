@@ -4,12 +4,14 @@ import json
 import re
 from dataclasses import dataclass
 
-PRICE_IN, PRICE_OUT = 1.00, 5.00       # dollars per million tokens (illustrative)
+PRICE_IN, PRICE_OUT = 1.00, 5.00   # $ per million tokens (illustrative)
+
+TOKEN = re.compile(r"\w+|[^\w\s]")     # toy tokens: words and punctuation
 
 
 def count_tokens(text):
     """A toy tokenizer: words and punctuation. Real tokenizers differ."""
-    return len(re.findall(r"\w+|[^\w\s]", text))
+    return len(TOKEN.findall(text))
 
 
 @dataclass
@@ -22,12 +24,12 @@ class Completion:
 
 
 def complete(prompt, *, answer, max_tokens):
-    """Pretend to answer; cut off at max_tokens."""
-    words = re.findall(r"\S+", answer)
-    kept = words[:max_tokens]
-    finish = "stop" if len(kept) == len(words) else "length"
-    out = " ".join(kept)
-    return Completion(out, finish, count_tokens(prompt), count_tokens(out),
+    """Pretend to answer; cut off after max_tokens tokens."""
+    tokens = list(TOKEN.finditer(answer))
+    kept = tokens[:max_tokens]
+    finish = "stop" if len(kept) == len(tokens) else "length"
+    out = answer[:kept[-1].end()] if kept else ""
+    return Completion(out, finish, count_tokens(prompt), len(kept),
                       latency_ms=300 + 20 * len(kept))
 
 

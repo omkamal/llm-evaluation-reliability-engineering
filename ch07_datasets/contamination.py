@@ -14,6 +14,8 @@ def grams(tokens, n):
 def overlap(case_text, reference_text, n=4):
     """Share of the case's n-grams that also appear in the reference."""
     mine = words(case_text)
+    if not mine:                    # "??" has no words, so cannot leak
+        return 0.0
     n = min(n, len(mine))           # a short message is checked whole
     ours = grams(mine, n)
     return len(ours & grams(words(reference_text), n)) / len(ours)

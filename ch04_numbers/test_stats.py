@@ -8,11 +8,15 @@ import pytest
 from ch03_first_eval.cases import CASES
 from ch03_first_eval.run_evals import run
 from ch04_numbers.ab_scores import prompt_ab_scores
-from ch04_numbers.stats import (bootstrap_ci, clustered_se, difference_ci,
+from ch04_numbers.stats import (bootstrap_ci, cluster_bootstrap_ci,
+                                clustered_se, coverage, difference_ci,
                                 mean, paired_bootstrap, paired_vs_unpaired_se,
                                 pass_at_k, pass_at_k_rate, pass_hat_k,
                                 pass_hat_k_rate, proportion_ci, sign_test_p,
-                                unpaired_bootstrap, wilson_ci)
+                                unpaired_bootstrap, wilson_ci,
+                                wilson_difference_ci, wilson_interval)
+
+TOPICS = [case["topic"] for case in CASES]
 
 
 def verdicts(version):
@@ -53,6 +57,17 @@ def test_edges_and_ordering():
             assert pass_hat_k(10, c, k) <= pass_at_k(10, c, k) + 1e-12
 
 
+def test_estimators_refuse_more_draws_than_trials():
+    # pass@10 from 5 trials used to come back as 1.0 for a case that
+    # never passed; pass^5 of 5 out of 10 used to divide by zero
+    for bad in ((5, 0, 10), (3, 0, 5), (5, 5, 10), (10, 3, 0)):
+        with pytest.raises(ValueError):
+            pass_at_k(*bad)
+        with pytest.raises(ValueError):
+            pass_hat_k(*bad)
+    assert pass_at_k(5, 0, 5) == 0.0 and pass_hat_k(5, 5, 5) == 1.0
+
+
 # ---- standard error and intervals -----------------------------------
 
 def test_forty_of_fifty():
@@ -82,6 +97,46 @@ def test_wilson_stays_inside_zero_to_one():
     for wins in (0, 30):
         lo, hi = wilson_ci(wins, 30)
         assert 0.0 <= lo <= hi <= 1.0
+    assert wilson_interval is wilson_ci
+
+
+def wald(wins, n):
+    return proportion_ci(wins, n)[2]
+
+
+def test_the_chapter_prints_wilson_for_sams_numbers():
+    pairs = [tuple(round(x, 2) for x in wilson_ci(w, 30))
+             for w in (28, 23, 30, 24)]
+    assert pairs == [(0.79, 0.98), (0.59, 0.88), (0.89, 1.0), (0.63, 0.9)]
+    lo1, _ = wilson_ci(28, 30)
+    _, hi2 = wilson_ci(23, 30)
+    assert lo1 < hi2                       # Sam's intervals still overlap
+
+
+def test_the_formula_fails_with_few_cases_near_the_top():
+    assert wald(30, 30) == (1.0, 1.0)      # zero width: false certainty
+    assert round(wald(28, 30)[1], 2) == 1.02
+    # how often each interval contains the true rate, 30 cases
+    assert round(coverage(wald, 30, 0.95), 2) == 0.78
+    assert round(coverage(wald, 30, 0.93), 2) == 0.88
+    assert round(coverage(wilson_ci, 30, 0.95), 2) == 0.94
+    for p in (0.80, 0.90, 0.93, 0.95, 0.98):
+        assert coverage(wilson_ci, 30, p) > 0.93
+    # in the middle of the range, with 50 cases, the formula is fine
+    assert coverage(wald, 50, 0.80) > 0.93
+
+
+def test_wilson_difference_keeps_width_where_the_formula_collapses():
+    gap, (lo, hi) = difference_ci(0, 600, 0, 30)
+    assert (lo, hi) == (0.0, 0.0)          # "no possible harm": false
+    gap, (lo, hi) = wilson_difference_ci(0, 600, 0, 30)
+    assert gap == 0 and lo < 0 and round(hi, 3) == 0.114
+    gap, (lo, hi) = wilson_difference_ci(28, 30, 23, 30)
+    assert (round(lo, 2), round(hi, 2)) == (-0.35, 0.02)
+    # with many cases in the middle it agrees with the formula
+    _, (wlo, whi) = wilson_difference_ci(400, 500, 440, 500)
+    _, (flo, fhi) = difference_ci(400, 500, 440, 500)
+    assert abs(wlo - flo) < 0.005 and abs(whi - fhi) < 0.005
 
 
 def test_overlap_is_a_conservative_test():
@@ -117,6 +172,25 @@ def test_relay_30_clusters_matter_for_v2_but_not_v1():
     assert round(clustered_se(verdicts("v2"), topics), 3) == 0.132
 
 
+def test_cluster_bootstrap_counts_topics_not_rows():
+    v1, v2 = verdicts("v1"), verdicts("v2")
+    diffs = [b - a for a, b in zip(v1, v2)]
+    changed = {TOPICS[i] for i, d in enumerate(diffs) if d}
+    assert changed == {"returns", "windows"}    # five cases, two topics
+    gap, (lo, hi) = cluster_bootstrap_ci(diffs, TOPICS)
+    assert round(gap, 2) == -0.17
+    assert (round(lo, 2), round(hi, 2)) == (-0.40, 0.0)
+    assert hi == 0                  # by topic, Friday is not proven
+    with pytest.raises(ValueError):
+        cluster_bootstrap_ci(diffs, TOPICS[:-1])
+
+
+def test_cluster_bootstrap_with_one_case_per_cluster_is_the_bootstrap():
+    values = [1] * 24 + [0] * 6
+    assert (cluster_bootstrap_ci(values, list(range(30)), seed=3)
+            == bootstrap_ci(values, seed=3))
+
+
 # ---- the bootstrap ----------------------------------------------------
 
 def test_figure_four_bootstrap_numbers():
@@ -128,6 +202,13 @@ def test_figure_four_bootstrap_numbers():
     assert [round(m, 2) for m in means] == [0.77, 0.83, 0.80]
     rate, (lo, hi) = bootstrap_ci(sample, seed=11)
     assert rate == 0.8 and (round(lo, 2), round(hi, 2)) == (0.63, 0.93)
+    wlo, whi = wilson_ci(24, 30)                 # a few hundredths away
+    assert (round(wlo, 2), round(whi, 2)) == (0.63, 0.90)
+
+
+def test_the_bootstrap_fails_like_the_formula_at_thirty_of_thirty():
+    assert bootstrap_ci([1] * 30)[1] == (1.0, 1.0)
+    assert round(wilson_ci(30, 30)[0], 2) == 0.89
 
 
 def test_bootstrap_is_reproducible_and_takes_any_statistic():
@@ -174,7 +255,7 @@ def test_prompt_ab_example_paired_versus_unpaired():
     assert ulo < 0 < lo                 # pairing turns a shrug into a call
 
 
-def test_pairing_wins_for_any_seed_not_just_the_chosen_one():
+def test_pairing_wins_for_other_seeds_not_just_the_chosen_one():
     for seed in range(30):
         old, new = prompt_ab_scores(seed=seed)
         paired, unpaired, rho = paired_vs_unpaired_se(old, new)
@@ -197,6 +278,9 @@ def test_friday_on_relay_30():
     assert round(gap, 2) == -0.17 and (round(lo, 2), round(hi, 2)) == (-0.34, 0.01)
     gap, (lo, hi) = paired_bootstrap(v1, v2)
     assert (round(lo, 2), round(hi, 2)) == (-0.30, -0.03)
+    # the chapter prints the Wilson-based gap for 30 cases
+    _, (lo, hi) = wilson_difference_ci(28, 30, 23, 30)
+    assert lo < 0 < hi
 
 
 def test_sign_test():
@@ -208,3 +292,22 @@ def test_sign_test():
 
 def test_twenty_slices_and_one_false_alarm():
     assert round(1 - 0.95 ** 20, 2) == 0.64
+
+
+def test_shuffling_breaks_the_pairing_exercise_three():
+    old, new = prompt_ab_scores()
+    random.Random(1).shuffle(new)
+    gap, (lo, hi) = paired_bootstrap(old, new)
+    assert round(gap, 2) == 0.12
+    assert (round(lo, 2), round(hi, 2)) == (-0.07, 0.30)
+
+
+def test_overlap_of_independent_intervals_means_the_gap_excludes_zero():
+    # no overlap implies the gap's own interval excludes zero (z = 1.96)
+    for wins_a in range(5, 46):
+        for wins_b in range(5, 46):
+            _, _, (lo_a, hi_a) = proportion_ci(wins_a, 50)
+            _, _, (lo_b, hi_b) = proportion_ci(wins_b, 50)
+            if hi_a < lo_b:
+                _, (lo, _) = difference_ci(wins_a, 50, wins_b, 50)
+                assert lo > 0

@@ -6,6 +6,7 @@ NAMES = ["jdoe", "asha", "bruno", "chen", "dara", "eli", "farah", "gus",
          "hana", "ivo"]
 DECOY = "INC-4799"      # a second incident, to catch wrong-record bugs
 RECORDS = ("users", "incidents", "orders", "tickets")
+LOGS = ("audit_log", "tool_calls", "session")   # bookkeeping, not world
 WRITE_TOOLS = {"create_ticket", "reschedule_delivery", "reset_password",
                "escalate_incident"}
 POLICY = {"escalation":

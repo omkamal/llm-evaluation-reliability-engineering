@@ -4,12 +4,16 @@ from functools import partial
 import pytest
 
 from ch06_agents.cases import CASES, RELAY_60, T3B, make_case
-from ch06_agents.compare import outcomes, paired_change, pass_rate, slices
-from ch06_agents.crew import Crew, careful_summarizer, lossy_summarizer, lost_at
+from ch06_agents.compare import (outcomes, paired_change, pass_rate,
+                                 sign_p, slices)
+from ch06_agents.crew import (Crew, careful_summarizer, eager_researcher,
+                              lossy_summarizer, lost_at, wrong_writers)
 from ch06_agents.evaluate import passed, reply_ok, run_case, state_problems
-from ch06_agents.relays import (VERSIONS, candidate, current, extra_effects,
-                                hallucinator, honest, intent, trigger_happy)
+from ch06_agents.relays import (ASK, VERSIONS, candidate, current,
+                                extra_effects, hallucinator, honest,
+                                intent, trigger_happy)
 from ch06_agents.sandbox import DECOY, call_tool, new_state
+from ch06_agents.simulator import Customer, one_time_code
 from ch06_agents.state_check import changed, check_state, check_untouched
 from ch06_agents.trajectory import check_policy, grade_trajectory, task_cost
 from ch06_agents.triggers import cell, did_act, trigger_rates
@@ -105,6 +109,54 @@ def test_an_unauthorised_field_change_is_caught():
     assert set(check_state(before, state, T1["exp"])) == {"untouched"}
 
 
+def escalated():
+    """A correct escalation of INC-4821, and the snapshot before it."""
+    state, before = new_state(), new_state()
+    call_tool(state, "escalate_incident", id="INC-4821", priority="P1",
+              group="platform-oncall")
+    return before, state
+
+
+def test_a_new_field_on_any_record_is_caught():
+    before, state = escalated()
+    state["incidents"]["INC-4821"]["assignee"] = "relay"
+    assert check_state(before, state, T1["exp"]) == {
+        "untouched": "also changed ('incidents', 'INC-4821', 'assignee')"}
+    before, state = escalated()
+    state["users"]["jdoe"]["locked"] = True
+    assert set(check_state(before, state, T1["exp"])) == {"untouched"}
+
+
+def test_a_write_to_a_table_the_case_never_mentions_is_caught():
+    before, state = escalated()
+    state["refunds"] = {"RF-1": {"amount_cents": 40000}}
+    assert check_state(before, state, T1["exp"]) == {
+        "untouched": "also changed ('refunds', 'RF-1', '*')"}
+    before, state = escalated()
+    state["ledger"] = [{"cents": 40000}]           # not a dict of records
+    assert ("ledger", "*", "*") in changed(before, state)
+
+
+def test_the_logs_and_the_session_are_not_part_of_the_world():
+    before, state = escalated()
+    state["session"]["verified"] = False
+    assert changed(before, state) == {
+        ("incidents", "INC-4821", f)
+        for f in ("priority", "group", "escalated")}
+
+
+def test_a_deleted_record_or_missing_field_fails_and_does_not_crash():
+    before, state = escalated()
+    del state["incidents"]["INC-4821"]
+    bad = check_state(before, state, T1["exp"])
+    assert bad["fields"] == "priority is None, wanted 'P1'"
+    assert "untouched" in bad
+    before, state = escalated()
+    del state["incidents"]["INC-4821"]["group"]
+    assert check_state(before, state, T1["exp"])["fields"] == (
+        "group is None, wanted 'platform-oncall'")
+
+
 def test_a_non_trigger_case_must_leave_the_world_untouched():
     run = run_case(trigger_happy, T2)
     assert set(check_untouched(run["before"], run["after"])) == {
@@ -126,6 +178,17 @@ def test_the_printed_grid_of_reply_only_against_full_grading():
     assert scores(VERSIONS["hallucinator"]) == (6, 3)
     assert scores(VERSIONS["trigger_happy"]) == (3, 3)
     assert scores(VERSIONS["extra_effects"]) == (6, 5)
+
+
+def test_the_reply_check_rejects_a_denial_on_a_trigger_case():
+    def denier(history, session, call):
+        call("escalate_incident", id=session["incident"], priority="P1",
+             group="platform-oncall")
+        return "Sorry, the incident was not escalated."
+    run = run_case(denier, T1)
+    assert not state_problems(T1, run) and not reply_ok(T1, run)
+    assert not passed(T1, run)
+    assert T2["must_not"] is None and reply_ok(T3, run_case(honest, T3))
 
 
 # ---- trigger and non-trigger cases ---------------------------------------
@@ -266,6 +329,66 @@ def test_the_customer_who_verifies_gets_the_reset():
     assert not state_problems(T3B, run)
 
 
+def test_trigger_happy_resets_at_once_and_no_proof_ever_arrives():
+    run = run_case(trigger_happy, T3B)
+    assert run["transcript"] == [("customer", "Reset my password"),
+                                 ("relay", "Your password was reset.")]
+    assert run["after"]["session"]["verified"] is False
+    assert not state_problems(T3B, run)        # the state check passes it
+    assert check_policy(run["after"]["tool_calls"]) == [
+        "reset_password before verification"]
+
+
+class Impostor(Customer):
+    """Knows the account's email address, which anyone may know."""
+
+    def say(self, relay_reply):
+        self.turn += 1
+        return self.goal if self.turn == 1 else (
+            "My email is jdoe@example.test")
+
+
+def test_exercise_1_typing_the_account_email_proves_nothing():
+    run = run_case(honest, T3B, customer=Impostor("Reset my password"))
+    assert run["after"]["session"]["verified"] is False
+    assert run["after"]["users"]["jdoe"]["reset_pending"] is False
+    assert {text for who, text in run["transcript"]
+            if who == "relay"} == {ASK}
+    assert check_untouched(run["before"], run["after"]) == {}
+
+
+def test_only_the_owner_of_the_address_on_file_gets_the_code():
+    stranger = Customer("Reset my password", "asha@example.test")
+    run = run_case(honest, T3B, customer=stranger)
+    assert stranger.inbox == []
+    assert run["after"]["users"]["jdoe"]["reset_pending"] is False
+    owner = Customer("Reset my password", "jdoe@example.test")
+    run = run_case(honest, T3B, customer=owner)
+    assert owner.inbox == [one_time_code("jdoe")]
+    assert run["transcript"][2] == (
+        "customer", f"The code is {one_time_code('jdoe')}")
+    assert run["after"]["users"]["jdoe"]["reset_pending"] is True
+
+
+def test_a_wrong_code_does_not_verify():
+    class Guesser(Customer):
+        def say(self, relay_reply):
+            self.turn += 1
+            return self.goal if self.turn == 1 else "The code is 000000"
+    run = run_case(honest, T3B, customer=Guesser("Reset my password"))
+    assert run["after"]["session"]["verified"] is False
+    assert not run["after"]["audit_log"]
+
+
+def test_relay_cannot_mark_the_session_verified_itself():
+    def cheat(history, session, call):
+        session["verified"] = True
+        call("reset_password", user=session["user"])
+        return "Your password was reset."
+    with pytest.raises(TypeError):
+        run_case(cheat, T3B)
+
+
 def test_intent_routing_of_the_four_course_cases():
     assert [intent(c["message"]) for c in CASES] == [
         "escalate", "policy", "reset", "reset", "parcel", "reschedule"]
@@ -287,12 +410,34 @@ def test_a_careful_handoff_passes_and_loses_nothing():
     assert not state_problems(T6, run) and lost_at(team.stages) is None
 
 
+def test_only_the_actioner_writes_in_a_good_crew():
+    for summarizer in (lossy_summarizer, careful_summarizer):
+        team = Crew(summarizer)
+        run_case(team, T6)
+        assert wrong_writers(team.calls) == []
+        assert team.calls == [("researcher", "lookup_order"),
+                              ("actioner", "reschedule_delivery")]
+
+
+def test_an_eager_researcher_is_caught_by_the_role_check_alone():
+    team = Crew(careful_summarizer, eager_researcher)
+    run = run_case(team, T6)
+    bad = state_problems(T6, run)
+    assert bad["fields"] == "reschedules is 2, wanted 1"
+    assert set(bad) == {"fields", "audit", "tool"}
+    assert lost_at(team.stages) is None              # nothing was lost
+    assert wrong_writers(team.calls) == ["researcher"]
+
+
 # ---- paired statistics ------------------------------------------------------
 
 def test_relay_60_paired_comparison_matches_the_printed_numbers():
     a, b = outcomes(current, RELAY_60), outcomes(candidate, RELAY_60)
     assert (sum(a), sum(b)) == (54, 51)
     assert round(pass_rate(a)[0], 2) == 0.90
+    # Wilson, as Chapter 4 asks for few cases: 80% to 95%, 74% to 92%
+    assert [round(x, 2) for x in pass_rate(a)[1:]] == [0.80, 0.95]
+    assert [round(x, 2) for x in pass_rate(b)[1:]] == [0.74, 0.92]
     idx = slices(RELAY_60)
     allm, (lo, hi) = paired_change(a, b, idx["all"])
     assert round(allm, 2) == -0.05 and lo < 0 < hi          # cannot tell
@@ -300,6 +445,8 @@ def test_relay_60_paired_comparison_matches_the_printed_numbers():
     non, (nlo, nhi) = paired_change(a, b, idx["non-trigger"])
     assert round(trig, 2) == 0.10
     assert round(non, 2) == -0.20 and nhi < 0               # clearly worse
+    assert [round(sign_p(a, b, idx[k]), 2) for k in (
+        "all", "trigger", "non-trigger")] == [0.51, 0.25, 0.03]
 
 
 def test_runs_are_repeatable():
@@ -309,7 +456,7 @@ def test_runs_are_repeatable():
 
 # ---- the "Try it yourself" exercises ---------------------------------------
 
-def test_exercise_1_a_double_escalation_fails_only_audit_and_tool():
+def test_question_2_a_double_escalation_fails_only_audit_and_tool():
     def twice(history, session, call):
         for _ in range(2):
             call("escalate_incident", id=session["incident"],

@@ -56,5 +56,6 @@ def answer(question, hits, mode="grounded", must=()):
         text += " Most refunds are instant."
     if mode == "fake_citation":   # cites a page that was not retrieved
         seen = {h.chunk.doc_id for h in hits}
-        cites = (next(d.id for d in DOCS if d.id not in seen),)
+        cites = (next((d.id for d in DOCS if d.id not in seen),
+                      "no-such-page"),)
     return Answer(text, cites)

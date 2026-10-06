@@ -6,19 +6,20 @@ from dataclasses import replace
 
 from ch04_numbers.stats import paired_bootstrap
 from ch05_judge.agreement import (chance_agreement, cohen_kappa, confusion,
-                                  labels_from_matrix, landis_koch,
-                                  observed_agreement, tpr_tnr)
-from ch05_judge.answers import (LEVELS, Answer, expert_label,
+                                  kappa_at_share, labels_from_matrix,
+                                  landis_koch, observed_agreement)
+from ch05_judge.answers import (FLAGGED, LEVELS, Answer, expert_label,
                                 friday_tweak, make_answers, pad, twin)
-from ch05_judge.calibrate import (JudgeCard, calibrate, judge_labels,
-                                  kappa_interval, meets_bar, report, split)
+from ch05_judge.calibrate import (JudgeCard, bar, calibrate, judge_labels,
+                                  kappa_interval, report, split)
 from ch05_judge.fixes import (length_gap, self_preference_gap,
                               swap_consistency, tally)
 from ch05_judge.jury import aggregate, needs_a_person
 from ch05_judge.production import (MixedJudges, ScoreRecord,
                                    monthly_judge_cost, pass_rate)
 from ch05_judge.simjudge import JudgeConfig, Temperament, reply, score_of
-from ch05_judge.verdict import build_prompt, grade, verdict_gateway
+from ch05_judge.verdict import (JUDGE_MODEL, POLICY, build_prompt, grade,
+                                verdict_gateway)
 
 B = Temperament("b")            # the judge's model family
 V1 = JudgeConfig("v1", B)       # a plain prompt, no rubric anchors
@@ -30,22 +31,30 @@ def pct(x):
     return f"{x:.0%}"
 
 
+def rates(r):
+    """TPR and TNR, each with its Wilson interval."""
+    (a, b), (c, d) = r["tpr_ci"], r["tnr_ci"]
+    return (f"TPR {r['tpr']:.2f} [{a:.2f}, {b:.2f}], "
+            f"TNR {r['tnr']:.2f} [{c:.2f}, {d:.2f}]")
+
+
 def main():
     question = "How long do I have to return an item?"
     invented = Answer("demo", "returns?", LEVELS["returns"][1], 1,
                       eager=True)
 
     print("== the judge prompt")
-    print(build_prompt(question, invented.text))
+    print(build_prompt(question, invented.text, policy=POLICY["returns"]))
 
     print("== a verdict, validated by the gateway")
     gw = verdict_gateway()
     v = grade(gw, question, invented,
-              lambda prompt: reply(V2, question, invented))
+              lambda prompt: reply(V2, question, invented),
+              policy=POLICY["returns"])
     print(f"score {v.score} -> {v.verdict}: {v.evidence}")
     contradiction = ('{"evidence": "Looks fine.", "score": 2, '
                      '"verdict": "pass"}')
-    gw.check(contradiction, prompt_version="v2", model_version="judge")
+    gw.check(contradiction, prompt_version="v2", model_version=JUDGE_MODEL)
     print("quarantined:", [(loc, kind)
                            for loc, kind, _ in gw.quarantine[0].errors])
 
@@ -61,7 +70,7 @@ def main():
               f"[{lo:+.2f}, {hi:+.2f}]")
     ok_old = sum(x.quality >= 4 for x in old) / 200
     ok_new = sum(x.quality >= 4 for x in new) / 200
-    print(f"support lead: pass rate {pct(ok_old)} -> {pct(ok_new)}")
+    print(f"Marcus: pass rate {pct(ok_old)} -> {pct(ok_new)}")
 
     print("== position bias")
     pairs = [(a, twin(a)) for a in make_answers(200, 2)]
@@ -96,11 +105,9 @@ def main():
     print("== the raw-agreement trap")
     expert = ["pass"] * 90 + ["fail"] * 10
     always = ["pass"] * 100
-    tpr, tnr = tpr_tnr(always, expert)
-    print(f"always-pass judge: agreement "
-          f"{observed_agreement(always, expert):.2f}, "
-          f"kappa {cohen_kappa(always, expert):.2f}, "
-          f"TPR {tpr:.2f}, TNR {tnr:.2f}")
+    r = report(always, expert)
+    print(f"always-pass judge: agreement {r['agree']:.2f}, "
+          f"kappa {r['kappa']:.2f}, TPR {r['tpr']:.2f}, TNR {r['tnr']:.2f}")
 
     print("== the kappa worked example")
     judge, expert = labels_from_matrix(175, 15, 5, 5)
@@ -109,8 +116,7 @@ def main():
     print(f"chance agreement:   {chance_agreement(judge, expert):.2f}")
     kappa = cohen_kappa(judge, expert)
     print(f"kappa: {kappa:.2f} ({landis_koch(kappa)})")
-    tpr, tnr = tpr_tnr(judge, expert)
-    print(f"TPR {tpr:.2f}, TNR {tnr:.2f}")
+    print(rates(report(judge, expert)))
     k, (lo, hi) = kappa_interval(judge, expert)
     print(f"kappa interval: [{lo:.2f}, {hi:.2f}]")
 
@@ -127,11 +133,23 @@ def main():
               f"  TNR {r['tnr']:.2f}")
     final = calibrate(V2, test)
     print(f"v2 on the test set, once: kappa {final['kappa']:.2f}, "
-          f"bar met: {meets_bar(final)}")
+          f"{final['fails']} fails")
+    print(f"  {rates(final)}: bar {bar(final)}")
+    flagged = make_answers(120, 44, weights=FLAGGED, prefix="f")
+    held = test + flagged
+    final = calibrate(V2, held)
+    print(f"plus 120 flagged answers: kappa {final['kappa']:.2f}, "
+          f"{final['fails']} fails")
+    print(f"  {rates(final)}: bar {bar(final)}")
+    shares = (final["fails"] / final["n"], 0.10, 0.05)
+    print("same judge, kappa at " + ", ".join(pct(s) for s in shares)
+          + " fails: " + ", ".join(
+              f"{kappa_at_share(final['tpr'], final['tnr'], s):.2f}"
+              for s in shares))
     v3 = replace(V2, version="v3", anchored=False)
-    again = calibrate(v3, test)
+    again = calibrate(v3, held)
     print(f"v3 (anchors dropped): kappa {again['kappa']:.2f}, "
-          f"bar met: {meets_bar(again)}")
+          f"TNR {again['tnr']:.2f}: bar {bar(again)}")
 
     print("== a jury of three families")
     crowd = make_answers(300, 31)
@@ -171,15 +189,17 @@ def main():
         pass_rate(mixed)
     except MixedJudges as e:
         print("refused:", e)
-    judged, cost = monthly_judge_cost(900_000, 0.05, 1500, 150, 1.0, 4.0)
-    _, everything = monthly_judge_cost(900_000, 1.0, 1500, 150, 1.0, 4.0)
-    print(f"judged per month: {judged:,.0f}; cost ${cost:,.2f}")
-    print(f"judging every task instead: ${everything:,.2f}")
+    chats = 1_000_000                   # the chat layer, every 28 days
+    judged, cost = monthly_judge_cost(chats, 0.05, 1500, 150, 1.0, 4.0)
+    _, everything = monthly_judge_cost(chats, 1.0, 1500, 150, 1.0, 4.0)
+    print(f"judged per 28 days: {judged:,.0f}; cost ${cost:,.2f}")
+    print(f"judging every chat instead: ${everything:,.2f}")
 
     print("== the judge card")
-    interval = kappa_interval(judge_labels(V2, test),
-                              [expert_label(a) for a in test])[1]
-    card = JudgeCard(V2, final, interval, "the support lead", "2026-10-04")
+    interval = kappa_interval(judge_labels(V2, held),
+                              [expert_label(a) for a in held])[1]
+    card = JudgeCard(V2, final, interval, "Marcus", "2026-10-04",
+                     model_id=JUDGE_MODEL)
     print("\n".join(card.lines()))
 
 

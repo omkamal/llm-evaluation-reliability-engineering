@@ -6,8 +6,8 @@ from ch02_trust_outputs.refund import Order
 from ch05_judge.agreement import cohen_kappa
 from common.clock import FakeClock
 from ch18_governance.audit import AuditLog
-from ch18_governance.broker import Broker
-from ch18_governance.door import Door, Payments
+from ch18_governance.broker import Broker, NeedsApproval
+from ch18_governance.door import Door, Payments, Refunds
 from ch18_governance.measure import loop_metrics, nearest_rank
 from ch18_governance.review import (InvalidProposal, ReviewDesk, build_packet,
                                     packet_lines)
@@ -33,6 +33,17 @@ def test_break_even_amount_and_error_rate():
     assert break_even_cents(0.02) == pytest.approx(7_500)
     assert break_even_cents(0.03) == pytest.approx(5_000)
     assert 150 / 40_000 == pytest.approx(0.00375)
+    assert break_even_cents(0.05) == pytest.approx(3_000)  # 5.0% as shown
+
+
+def test_a_reviewer_who_misses_errors_moves_the_line_up():
+    assert break_even_cents(0.02, catch_rate=0.9) == pytest.approx(8_333.33,
+                                                                   abs=0.01)
+    assert needs_review(0.02, 8_000) and not needs_review(0.02, 8_000,
+                                                           catch_rate=0.9)
+    # a stamp catches nothing, so no amount makes its review pay
+    assert break_even_cents(0.02, catch_rate=0.0) == float("inf")
+    assert not needs_review(0.02, 10_000_000, catch_rate=0.0)
 
 
 def make_case(cents=40_000, **kw):
@@ -76,12 +87,13 @@ def desk():
     orders = {"ORD-004830": Order("cust-31", 52_000)}
     clock = FakeClock()
     broker, log, pay = Broker(clock), AuditLog(clock), Payments()
-    door = Door(broker, log, {"issue_refund": pay.issue_refund})
+    door = Door(broker, log, {"issue_refund": Refunds(pay, orders)})
     return clock, log, pay, ReviewDesk(clock, broker, door, log, orders)
 
 
 def escalate(d, clock, cents=40_000, priority=1, **kw):
     case = make_case(cents, **kw)
+    case.case_id = f"case-{d.count + 1}"     # one case, one refund key
     return d.escalate_to_human("high value",
                                build_packet(case, clock.now() + d.sla),
                                "cust-31", priority)
@@ -104,7 +116,7 @@ def test_approve_pays_once_and_leaves_two_records_with_the_approver():
     out = d.decide(item, "reviewer-7", "approve")
     assert (out.decision, out.final_cents, out.waited) == (
         "approve", 40_000, 300)
-    assert pay.ledger == [("issue_refund", "ORD-004830")]
+    assert pay.ledger == [("issue_refund", "ORD-004830", 40_000)]
     assert [e["decision"] for e in log.events] == ["allow", "approve"]
     assert {e["approver"] for e in log.events} == {"reviewer-7"}
     assert out.label()["label"] == "pass"
@@ -128,6 +140,29 @@ def test_reject_pays_nothing_and_still_leaves_a_record():
     assert [e["decision"] for e in log.events] == ["reject"]
 
 
+@pytest.mark.parametrize("button", ["REJECT", "Reject", " reject "])
+def test_a_reject_in_capitals_is_still_a_reject(button):
+    clock, log, pay, d = desk()
+    out = d.decide(escalate(d, clock), "reviewer-7", button)
+    assert pay.ledger == [] and out.decision == "reject"
+    assert out.label()["label"] == "fail"
+
+
+@pytest.mark.parametrize("button", ["yes", "", "approved", None])
+def test_an_unknown_decision_pays_nothing_and_writes_nothing(button):
+    clock, log, pay, d = desk()
+    with pytest.raises(ValueError):
+        d.decide(escalate(d, clock), "reviewer-7", button)
+    assert pay.ledger == [] and log.events == []
+
+
+def test_only_a_known_reviewer_can_approve_above_the_cap():
+    clock, log, pay, d = desk()
+    with pytest.raises(NeedsApproval):
+        d.decide(escalate(d, clock), "human", "approve")
+    assert pay.ledger == []
+
+
 def test_a_person_cannot_approve_a_refund_on_someone_elses_order():
     clock, log, pay, d = desk()
     item = escalate(d, clock)
@@ -139,13 +174,14 @@ def test_a_person_cannot_approve_a_refund_on_someone_elses_order():
 
 def test_the_loop_numbers():
     clock, _, _, d = desk()
+    d.orders["ORD-004830"].total_cents = 1_000_000   # room for every refund
     for wait, decision in [(100, "approve"), (200, "approve"),
                            (400, "edit"), (1_000, "reject")]:
         item = escalate(d, clock)
         clock.sleep(wait)
         d.decide(item, "reviewer-7", decision, edited_cents=2_500)
     m = loop_metrics(d.outcomes, tasks=40, sla=900)
-    assert m["escalation rate"] == pytest.approx(0.10)
+    assert m["hand-off rate"] == pytest.approx(0.10)
     assert m["override rate"] == pytest.approx(0.5)
     assert m["queue p50 s"] == 200 and m["past SLA"] == pytest.approx(0.25)
 

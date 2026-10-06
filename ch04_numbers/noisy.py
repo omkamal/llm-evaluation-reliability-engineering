@@ -9,7 +9,7 @@ import random
 from functools import lru_cache
 
 from ch03_first_eval.run_evals import run
-from ch04_numbers.stats import paired_bootstrap
+from ch04_numbers.stats import cluster_bootstrap_ci, paired_bootstrap
 
 STAY_RIGHT = 0.94   # chance of passing when the scripted answer is right
 LUCKY = 0.20        # chance of passing when the scripted answer is wrong
@@ -51,3 +51,26 @@ def flagged_count(trials, repeats, seed=0):
         _, (_, upper) = paired_bootstrap(v1, v2, resamples=1_000)
         flagged += upper < 0
     return flagged
+
+
+def false_alarm_count(trials, repeats, seed=0, clusters=None):
+    """An A/A check, repeated: v1 against a second run of itself.
+
+    Count the repeats in which the paired interval excludes zero, though
+    nothing changed. A 95% interval promises about 5 in 100; a percentile
+    bootstrap on thirty cases runs a little narrow and gives about 7, and
+    on ten topics (pass `clusters`) narrower still, about 10.
+    """
+    rng = random.Random(seed)
+    alarms = 0
+    for _ in range(repeats):
+        run_a = case_scores(many_trials("v1", trials, rng))
+        run_b = case_scores(many_trials("v1", trials, rng))
+        if clusters is None:
+            _, (lo, hi) = paired_bootstrap(run_a, run_b, resamples=1_000)
+        else:
+            diffs = [b - a for a, b in zip(run_a, run_b)]
+            _, (lo, hi) = cluster_bootstrap_ci(diffs, clusters,
+                                               resamples=1_000)
+        alarms += lo > 0 or hi < 0
+    return alarms

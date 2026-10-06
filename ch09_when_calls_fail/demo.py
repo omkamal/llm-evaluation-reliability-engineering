@@ -22,8 +22,9 @@ def main():
 
     print("== classify, back off, honour Retry-After")
     clock, rng = FakeClock(), random.Random(7)
-    for script in (scripted((429, 1.0), (503, None), (200, None)), scripted((400, None))):
-        print(call_with_retry(script, RetryBudget(), deadline=20, clock=clock, rng=rng))
+    for script in (scripted((429, 1.0), (503, None), (200, None)), scripted((400, None)),
+                   scripted((429, None, "enforced_spend_limit_reached"))):
+        print(call_with_retry(script, RetryBudget(), deadline=clock.now() + 20, clock=clock, rng=rng))
 
     print("== shared retry budget")
     print(f"with a budget: {storm(1000)} retries for 1000 requests")
@@ -36,10 +37,11 @@ def main():
         br.record(False)
     print(f"after 5 failures: {br.state} | next call allowed? {br.allow()}")
     clock.sleep(30)
-    print(f"after cooldown, 4 callers: {[br.allow() for _ in range(4)]} {br.state}")
+    tickets = [br.allow() for _ in range(4)]
+    print(f"after cooldown, 4 callers: {tickets} {br.state}")
     states = []
-    for _ in range(3):
-        br.record(True)
+    for ticket in tickets[:3]:
+        br.record(True, ticket)
         states.append(br.state)
     print("probe successes: " + " -> ".join(states))
 
@@ -60,10 +62,10 @@ def main():
         print(f"aborted at step {lg.steps}: {err}")
 
     print("== quota manager")
-    q = QuotaManager()
-    print("quiet chats, background borrows:", q.admit("background", 70_000))
-    q.new_minute(); q.chat_waiting = True
-    print("chats waiting, background capped:", q.admit("background", 30_000), q.admit("background", 30_000))
+    q = QuotaManager()                          # one minute, no reset in between
+    print("quiet chats, background borrows:", q.admit("background", 60_000), q.admit("background", 20_000))
+    q.chat_waiting = True
+    print("chats waiting, background stops:", q.admit("background", 1_000))
     print("chats still admitted:", q.admit("interactive", 40_000))
 
 
