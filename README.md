@@ -62,7 +62,7 @@ python3 -m venv .venv
 ```
 
 Python 3.10 or newer. Chapter 2 uses [Pydantic](https://docs.pydantic.dev/) (`pip install -r requirements.txt`) and Chapter 5 reuses that gateway; everything else uses only the standard library. Files under `optional/` folders show a vendor library (OpenTelemetry, Prometheus, Evidently); they are not run by the tests or by CI, and each states the version it was checked with.
-Continuous integration runs the tests and the demos on Python 3.10 to 3.13.
+Continuous integration runs the tests and the demos on Python 3.10 to 3.13. The numbers printed in the book come from Python 3.12; simulations that draw random numbers can differ by a few counts on other versions, so the tests that depend on them check a band, not an exact count.
 
 ## License
 

@@ -151,7 +151,8 @@ def test_a_gate_that_blocks_on_doubt_blocks_nearly_every_healthy_build():
 
 def test_chapter_3s_hard_line_blocks_healthy_builds_about_half_the_time():
     blocks = [check.hard_line_blocks("main", t, runs=1000) for t in TIERS]
-    assert blocks == [475, 483, 482]
+    # Python 3.12 gives 475, 483, 482; other versions differ by a few counts
+    assert all(440 <= b <= 520 for b in blocks)
 
 
 def test_against_one_fixed_baseline_the_count_is_that_file_s_luck():

@@ -102,10 +102,12 @@ def test_report_card_by_topic_on_friday_at_five_trials():
 
 
 def test_a_a_false_alarms_run_near_seven_in_a_hundred():
-    assert false_alarm_count(5, 400) == 18          # 4.5%: a lucky seed
-    assert false_alarm_count(5, 1_000, seed=1) == 78   # about 7 in 100
+    # Python 3.12 gives 18, 78 and 39; other versions' random streams differ
+    # by a few counts, so the tests assert the band the chapter describes
+    assert 10 <= false_alarm_count(5, 400) <= 26          # 4.5% here: a lucky seed
+    assert 65 <= false_alarm_count(5, 1_000, seed=1) <= 90   # about 7 in 100
     # ten topics are few units: the cluster interval runs narrower still
-    assert false_alarm_count(5, 400, clusters=TOPICS) == 39   # about 10
+    assert 30 <= false_alarm_count(5, 400, clusters=TOPICS) <= 50   # about 10
 
 
 def test_ten_trials_of_thirty_cases_are_not_three_hundred_cases():
